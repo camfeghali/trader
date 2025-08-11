@@ -82,7 +82,7 @@ class BinanceWebSocketClient:
         k = data['k']
         
         return BinanceKlineData(
-            symbol=k['s'],
+            symbol=k['s'].lower(),
             interval=k['i'],
             open_time=k['t'],
             close_time=k['T'],
@@ -129,6 +129,7 @@ class CustomKlineProcessor:
     
     async def process_kline(self, kline: BinanceKlineData):
         """Custom kline processing logic"""
+        print(f"Processing kline: {kline}")
         if kline.is_closed:
             # Initialize nested structure if it doesn't exist
             if kline.symbol not in self.kline_history:
@@ -148,6 +149,7 @@ class CustomKlineProcessor:
             if len(klines) >= 20:
                 sma_20 = sum(k.close_price for k in klines[-20:]) / 20
                 print(f"📈 20-period SMA: {sma_20:.2f}")
+            
             
             # Example trading logic
             if kline.close_price > kline.open_price:
