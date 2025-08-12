@@ -2,26 +2,11 @@ import asyncio
 import websockets
 import json
 from typing import Optional, Callable, Dict, Any
-from dataclasses import dataclass
 from datetime import datetime
-
-@dataclass
-class BinanceKlineData:
-    """Structured kline data from Binance"""
-    symbol: str
-    interval: str
-    open_time: int
-    close_time: int
-    open_price: float
-    high_price: float
-    low_price: float
-    close_price: float
-    volume: float
-    quote_volume: float
-    trades_count: int
-    taker_buy_volume: float
-    taker_buy_quote_volume: float
-    is_closed: bool
+from models import BinanceKlineData
+from dataframe import KlineDataFrame
+from ta_calculator import TaCalculator
+from daos import BinanceDataProcessor
 
 class BinanceWebSocketClient:
     def __init__(self, symbol: str = "btcusdt", interval: str = "1m"):
@@ -119,9 +104,6 @@ class BinanceWebSocketClient:
         self.is_connected = False
         print("🔌 Disconnected from Binance WebSocket")
 
-# Create Binance WebSocket client instance
-binance_client = BinanceWebSocketClient(symbol="btcusdt", interval="1m")
-
 # Example of custom kline processor
 class CustomKlineProcessor:
     def __init__(self):
@@ -137,10 +119,8 @@ class CustomKlineProcessor:
             if kline.interval not in self.kline_history[kline.symbol]:
                 self.kline_history[kline.symbol][kline.interval] = []
             
-            # Store closed klines
             self.kline_history[kline.symbol][kline.interval].append(kline)
             
-            # Keep only last 100 klines
             if len(self.kline_history[kline.symbol][kline.interval]) > 100:
                 self.kline_history[kline.symbol][kline.interval].pop(0)
             
@@ -150,15 +130,10 @@ class CustomKlineProcessor:
                 sma_20 = sum(k.close_price for k in klines[-20:]) / 20
                 print(f"📈 20-period SMA: {sma_20:.2f}")
             
-            
             # Example trading logic
             if kline.close_price > kline.open_price:
                 print("🟢 Bullish candle")
+                print(f"📈 20-period SMA: {sma_20:.2f}")
             else:
                 print("🔴 Bearish candle")
-
-# Create custom processor instance
-custom_processor = CustomKlineProcessor()
-
-# Override the default process_kline method
-binance_client.process_kline = custom_processor.process_kline 
+                print(f"📉 20-period SMA: {sma_20:.2f}")

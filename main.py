@@ -1,14 +1,40 @@
 from typing import Union
 from fastapi import FastAPI
-from binance_websocket import binance_client
+from binance_websocket import BinanceWebSocketClient
+from dataframe import KlineDataFrame
+from ta_calculator import TaCalculator
+from daos import BinanceDataProcessor
+import time
 
 app = FastAPI()
+
+symbol = "btcusdt"
+interval = "1m"
+
+# Use proper datetime calculation like in get_historical_data.py
+from datetime import datetime, timezone, timedelta
+
+def to_ms(dt: datetime) -> int:
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+start_dt = datetime(2025, 8, 1, tzinfo=timezone.utc)
+end_dt   = datetime(2025, 8, 11, tzinfo=timezone.utc)
+start_ms, end_ms = to_ms(start_dt), to_ms(end_dt)
 
 @app.on_event("startup")
 async def startup_event():
     """Start Binance WebSocket connection when app starts"""
     import asyncio
+
+    # Create Binance WebSocket client instance
+    binance_client = BinanceWebSocketClient(symbol=symbol, interval=interval)
+    kline_df = KlineDataFrame(TaCalculator(), BinanceDataProcessor())
+    
+    # Override the default process_kline method
+    binance_client.process_kline = kline_df.process_kline 
+
     asyncio.create_task(binance_client.connect())
+    await kline_df.get_historical_data(symbol=symbol, interval="1m", start_ms=start_ms, end_ms=end_ms)
 
 @app.get("/")
 def read_root():
@@ -121,3 +147,4 @@ async def get_available_data():
         "message": "No data available yet",
         "available_data": {}
     }
+
