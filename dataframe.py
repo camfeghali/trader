@@ -47,10 +47,26 @@ class KlineDataFrame:
     async def process_kline(self, kline: BinanceKlineData):
         if kline.is_closed:
             self.add_row(kline)
-            self.df['rsi'] = self.ta_calculator.calculate_rsi(self.df)
+            # Calculate RSI and update the DataFrame
+            self.df = self.ta_calculator.calculate_rsi(self.df)
         print(self.get_dataframe())
 
     def add_row(self, candle: BinanceKlineData):
+        # Check if this open_time already exists (O(1) average case with hash lookup)
+        if len(self.df) > 0 and candle.open_time in self.df['open_time'].values:
+            # Update existing row instead of adding duplicate
+            mask = self.df['open_time'] == candle.open_time
+            self.df.loc[mask, 'close_price'] = candle.close_price
+            self.df.loc[mask, 'high_price'] = candle.high_price
+            self.df.loc[mask, 'low_price'] = candle.low_price
+            self.df.loc[mask, 'volume'] = candle.volume
+            self.df.loc[mask, 'quote_volume'] = candle.quote_volume
+            self.df.loc[mask, 'trades_count'] = candle.trades_count
+            self.df.loc[mask, 'taker_buy_volume'] = candle.taker_buy_volume
+            self.df.loc[mask, 'taker_buy_quote_volume'] = candle.taker_buy_quote_volume
+            self.df.loc[mask, 'is_closed'] = candle.is_closed
+            return
+        
         # Convert the dataclass to a dictionary
         candle_dict = {
             'symbol': candle.symbol,

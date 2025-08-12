@@ -18,7 +18,7 @@ def to_ms(dt: datetime) -> int:
     return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 start_dt = datetime(2025, 8, 1, tzinfo=timezone.utc)
-end_dt   = datetime(2025, 8, 11, tzinfo=timezone.utc)
+end_dt   = datetime.now(timezone.utc)
 start_ms, end_ms = to_ms(start_dt), to_ms(end_dt)
 
 @app.on_event("startup")
