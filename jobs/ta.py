@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Technical Analysis Script
-Reads BTCUSDT_1m.csv and adds RSI 14 indicator
+Reads BTCUSDC_1m.csv and adds RSI 14 indicator
 """
 
 import pandas as pd
@@ -9,7 +9,7 @@ import talib
 import sys
 import os
 
-def add_rsi_to_csv(csv_file: str = "BTCUSDT_1m.csv", rsi_length: int = 14):
+def add_rsi_to_csv(csv_file: str = "BTCUSDC_1m.csv", rsi_length: int = 14):
     """
     Read CSV file and add RSI column
     
@@ -59,7 +59,7 @@ def add_rsi_to_csv(csv_file: str = "BTCUSDT_1m.csv", rsi_length: int = 14):
         print(df[['open_time', 'open', 'high', 'low', 'close', 'volume', 'rsi']].tail())
         
         # Save the updated DataFrame
-        output_file = f"BTCUSDT_1m_with_rsi_{rsi_length}.csv"
+        output_file = f"BTCUSDC_1m_with_rsi_{rsi_length}.csv"
         df.to_csv(output_file, index=False)
         print(f"\n💾 Saved updated data to: {output_file}")
         
@@ -116,7 +116,7 @@ def analyze_rsi_signals(df: pd.DataFrame):
 
 def main():
     """Main function"""
-    print("🚀 BTCUSDT Technical Analysis Script")
+    print("🚀 BTCUSDC Technical Analysis Script")
     print("=" * 50)
     
     # Process the CSV file

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 BASE = "https://api.binance.com"      # Spot. For USDT-M futures use: https://fapi.binance.com
 ENDPOINT = "/api/v3/klines"
-SYMBOL = "BTCUSDT"
+SYMBOL = "BTCUSDC"
 INTERVAL = "1m"
 LIMIT = 1000
 

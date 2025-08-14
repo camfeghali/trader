@@ -7,7 +7,7 @@ BASE = "https://api.binance.com/api/v3/"
 ENDPOINT = "klines"
 
 class BinanceDataProcessor:
-    def fetch_klines(self, start_ms: int, end_ms: int, symbol="btcusdt", interval="1m", limit=1000):
+    def fetch_klines(self, start_ms: int, end_ms: int, symbol="btcusdc", interval="1m", limit=1000):
         """Generator yielding kline batches [list[list]] between start_ms and end_ms."""
         curr = start_ms
         while curr < end_ms:

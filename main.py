@@ -8,7 +8,7 @@ import time
 
 app = FastAPI()
 
-symbol = "btcusdt"
+symbol = "btcusdc"
 interval = "1m"
 
 # Use proper datetime calculation like in get_historical_data.py
@@ -41,7 +41,7 @@ def read_root():
     return {"Hello": "World"}
 
 @app.get("/binance/kline-history")
-async def get_kline_history(symbol: str = "btcusdt", interval: str = "1m", limit: int = 10):
+async def get_kline_history(symbol: str = "btcusdc", interval: str = "1m", limit: int = 10):
     """Get recent kline history from the custom processor"""
     # Import the custom processor from binance_websocket
     from binance_websocket import custom_processor
@@ -84,7 +84,7 @@ async def get_kline_history(symbol: str = "btcusdt", interval: str = "1m", limit
     }
 
 @app.get("/binance/current-price")
-async def get_current_price(symbol: str = "btcusdt", interval: str = "1m"):
+async def get_current_price(symbol: str = "btcusdc", interval: str = "1m"):
     """Get current price from the latest kline"""
     from binance_websocket import custom_processor
     

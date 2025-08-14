@@ -9,7 +9,7 @@ from ta_calculator import TaCalculator
 from daos import BinanceDataProcessor
 
 class BinanceWebSocketClient:
-    def __init__(self, symbol: str = "btcusdt", interval: str = "1m"):
+    def __init__(self, symbol: str = "btcusdc", interval: str = "1m"):
         self.symbol = symbol.lower()
         self.interval = interval
         self.websocket: Optional[websockets.WebSocketServerProtocol] = None

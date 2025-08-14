@@ -3,6 +3,7 @@ import pandas_ta as ta
 from models import BinanceKlineData
 from ta_calculator import TaCalculator
 from daos import BinanceDataProcessor
+import time
 
 class KlineDataFrame:
     def __init__(self, ta_calculator: TaCalculator, data_fetcher: BinanceDataProcessor):
@@ -47,9 +48,16 @@ class KlineDataFrame:
     async def process_kline(self, kline: BinanceKlineData):
         if kline.is_closed:
             self.add_row(kline)
-            # Calculate RSI and update the DataFrame
-            self.df = self.ta_calculator.calculate_rsi(self.df)
-        print(self.get_dataframe())
+            self.calculate_tas()
+        print(self.get_dataframe(['open_time', 'close_price', 'open_price', 'close_price', 'high_price', 'low_price', 'ema_9', 'ema_21', 'ema_50']))
+
+    def calculate_tas(self):
+        start_time = time.time()
+        
+        self.df = self.ta_calculator.calculate_all_indicators(self.df)
+        
+        execution_time = time.time() - start_time
+        print(f"⏱️ Technical Analysis calculation completed in {execution_time:.4f} seconds")
 
     def add_row(self, candle: BinanceKlineData):
         # Check if this open_time already exists (O(1) average case with hash lookup)
@@ -99,9 +107,11 @@ class KlineDataFrame:
     def __repr__(self):
         return self.__str__()
     
-    def get_dataframe(self):
+    def get_dataframe(self, columns: list[str] = None):
         """Get the underlying pandas DataFrame"""
-        return self.df
+        if columns is None:
+            return self.df
+        return self.df[columns]
     
     def get_latest(self, n: int = 5):
         """Get the latest n rows"""
