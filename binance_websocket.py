@@ -110,7 +110,6 @@ class CustomKlineProcessor:
     
     async def process_kline(self, kline: BinanceKlineData):
         """Custom kline processing logic"""
-        print(f"Processing kline: {kline}")
         if kline.is_closed:
             # Initialize nested structure if it doesn't exist
             if kline.symbol not in self.kline_history:

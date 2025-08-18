@@ -51,10 +51,6 @@ async def get_kline_history(symbol: str = "btcusdc", interval: str = "1m", limit
     symbol = symbol.lower()
     interval = interval.lower()
     
-    print(f"Debug - kline_history: {custom_processor.kline_history}")
-    print(f"Debug - symbol: {symbol}")
-    print(f"Debug - interval: {interval}")
-
     if (hasattr(custom_processor, 'kline_history') and 
         custom_processor.kline_history and 
         symbol in custom_processor.kline_history and 
@@ -92,10 +88,6 @@ async def get_current_price(symbol: str = "btcusdc", interval: str = "1m"):
     # Normalize symbol and interval
     symbol = symbol.lower()
     interval = interval.lower()
-    
-    print(f"Debug - kline_history: {custom_processor.kline_history}")
-    print(f"Debug - symbol: {symbol}")
-    print(f"Debug - interval: {interval}")
 
     if (hasattr(custom_processor, 'kline_history') and 
         custom_processor.kline_history and 

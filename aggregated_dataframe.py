@@ -6,20 +6,13 @@ if TYPE_CHECKING:
     from dataframe import KlineDataFrame
 
 from models import BinanceKlineData
+from base_dataframe import BaseDataFrame
 
-class AggregateDataFrame:
-    def __init__(self, interval_in_minutes: int):
+class AggregateDataFrame(BaseDataFrame):
+    def __init__(self, interval_in_minutes: int, max_rows: int = 100):
+        super().__init__()
         self.interval_in_minutes = interval_in_minutes
-        
-        # Initialize columns for aggregated dataframe
-        init_cols = [
-            "symbol", "interval", 
-            "open_time", "close_time", 
-            "open_price", "high_price", "low_price", "close_price", 
-            "volume", "quote_volume", 
-            "trades_count", "taker_buy_volume", "taker_buy_quote_volume", "is_closed"
-        ]
-        self.df = pd.DataFrame(columns=init_cols)
+        self.max_rows = max_rows
 
     def fill_from_1m_dataframe(self, kline_df: 'KlineDataFrame') -> None:
         """
@@ -69,10 +62,6 @@ class AggregateDataFrame:
             # Get the chunk of data for this interval
             chunk = kline_df.df.iloc[current_start_idx:current_end_idx]
             
-            print(f"Debug: Interval {interval_idx}: selecting rows {current_start_idx} to {current_end_idx}")
-            print(f"Debug: First candle in chunk: open_time={chunk.iloc[0]['open_time']}, close_time={chunk.iloc[0]['close_time']}")
-            print(f"Debug: Last candle in chunk: open_time={chunk.iloc[-1]['open_time']}, close_time={chunk.iloc[-1]['close_time']}")
-            
             # Verify we have a complete chunk
             if len(chunk) == candles_needed:
                 # The first candle should already be at a boundary (we checked this above)
@@ -82,7 +71,7 @@ class AggregateDataFrame:
                 aggregated_kline = self._create_aggregated_kline(chunk, first_candle)
                 
                 # Add to dataframe using existing function
-                self.add_aggregated_kline(aggregated_kline)
+                self.add_kline(aggregated_kline)
             else:
                 print(f"⚠️ Interval {interval_idx}: Incomplete chunk, got {len(chunk)} candles, need {candles_needed}")
         
@@ -141,7 +130,7 @@ class AggregateDataFrame:
         aggregated_kline = self._create_aggregated_kline(recent_data, last_row)
         
         # Add to our aggregated dataframe
-        self.add_aggregated_kline(aggregated_kline)
+        self.add_kline(aggregated_kline)
         
         print(f"📊 Aggregated {self.interval_in_minutes}-min candle: O:{aggregated_kline.open_price:.2f} H:{aggregated_kline.high_price:.2f} L:{aggregated_kline.low_price:.2f} C:{aggregated_kline.close_price:.2f}")
         
@@ -189,9 +178,7 @@ class AggregateDataFrame:
         
         first_candle_time = candles_df.iloc[0]['open_time']
         last_candle_time = candles_df.iloc[-1]['close_time']
-        
-        print(f"Debug: Aggregated result: open_time={first_candle_time}, close_time={last_candle_time}")
-        
+                
         # Create the aggregated kline
         aggregated_kline = BinanceKlineData(
             symbol=last_row['symbol'],
@@ -211,68 +198,6 @@ class AggregateDataFrame:
         )
         
         return aggregated_kline
-
-    def add_aggregated_kline(self, kline: BinanceKlineData):
-        """
-        Add an aggregated kline to the dataframe.
-        
-        Args:
-            kline: The aggregated kline to add
-        """
-        # Check if this open_time already exists
-        if len(self.df) > 0 and kline.open_time in self.df['open_time'].values:
-            # Update existing row instead of adding duplicate
-            mask = self.df['open_time'] == kline.open_time
-            self.df.loc[mask, 'close_price'] = kline.close_price
-            self.df.loc[mask, 'high_price'] = kline.high_price
-            self.df.loc[mask, 'low_price'] = kline.low_price
-            self.df.loc[mask, 'volume'] = kline.volume
-            self.df.loc[mask, 'quote_volume'] = kline.quote_volume
-            self.df.loc[mask, 'trades_count'] = kline.trades_count
-            self.df.loc[mask, 'taker_buy_volume'] = kline.taker_buy_volume
-            self.df.loc[mask, 'taker_buy_quote_volume'] = kline.taker_buy_quote_volume
-            self.df.loc[mask, 'is_closed'] = kline.is_closed
-            return
-        
-        # Convert the dataclass to a dictionary
-        kline_dict = {
-            'symbol': kline.symbol,
-            'interval': kline.interval,
-            'open_time': kline.open_time,
-            'close_time': kline.close_time,
-            'open_price': kline.open_price,
-            'high_price': kline.high_price,
-            'low_price': kline.low_price,
-            'close_price': kline.close_price,
-            'volume': kline.volume,
-            'quote_volume': kline.quote_volume,
-            'trades_count': kline.trades_count,
-            'taker_buy_volume': kline.taker_buy_volume,
-            'taker_buy_quote_volume': kline.taker_buy_quote_volume,
-            'is_closed': kline.is_closed
-        }
-        
-        # Add the new row to the dataframe
-        new_row = pd.DataFrame([kline_dict])
-        self.df = pd.concat([self.df, new_row], ignore_index=True)
-        
-        # Keep only last 100 rows (you can make this configurable)
-        if len(self.df) > 100:
-            self.df = self.df.tail(100)
-
-    def get_dataframe(self) -> pd.DataFrame:
-        """Get the underlying pandas DataFrame"""
-        return self.df
-
-    def get_latest(self, n: int = 5) -> pd.DataFrame:
-        """Get the latest n rows"""
-        return self.df.tail(n)
-
-    def get_latest_price(self) -> Optional[float]:
-        """Get the latest close price"""
-        if len(self.df) > 0:
-            return self.df.iloc[-1]['close_price']
-        return None
 
     def is_interval_boundary(self, timestamp_ms: int) -> bool:
         """
@@ -301,11 +226,19 @@ class AggregateDataFrame:
         
         return next_interval_minutes * 60 * 1000
 
-    def __str__(self):
-        return f"AggregateDataFrame({self.interval_in_minutes}m) with {len(self.df)} rows:\n{self.df.to_string()}"
-
-    def __repr__(self):
-        return self.__str__()
+    def add_aggregated_kline(self, kline: BinanceKlineData):
+        """Alias for add_kline for backward compatibility"""
+        self.add_kline(kline)
+    
+    def add_kline(self, kline: BinanceKlineData):
+        """
+        Add a kline to the dataframe and limit rows to max_rows.
+        
+        Args:
+            kline: The kline data to add
+        """
+        super().add_kline(kline)
+        self.limit_rows(self.max_rows)
 
 
     

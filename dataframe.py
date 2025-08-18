@@ -6,17 +6,11 @@ from daos import BinanceDataProcessor
 import time
 from typing import List
 from aggregated_dataframe import AggregateDataFrame
+from base_dataframe import BaseDataFrame
 
-class KlineDataFrame:
+class KlineDataFrame(BaseDataFrame):
     def __init__(self, ta_calculator: TaCalculator, data_fetcher: BinanceDataProcessor, aggregate_dataframes: List[AggregateDataFrame]):
-        init_cols = [
-            "symbol", "interval", 
-            "open_time", "close_time", 
-            "open_price", "high_price", "low_price", "close_price", 
-            "volume", "quote_volume", 
-            "trades_count", "taker_buy_volume", "taker_buy_quote_volume", "is_closed"
-        ]
-        self.df = pd.DataFrame(columns=init_cols)
+        super().__init__()
         self.ta_calculator = ta_calculator
         self.data_fetcher = data_fetcher
         self.aggregate_dataframes = aggregate_dataframes
@@ -44,7 +38,7 @@ class KlineDataFrame:
                     is_closed=True  # Historical data is always closed
                 )
                 
-                self.add_row(kline_data)
+                self.add_kline(kline_data)
         print(f"Added {len(self.df)} historical klines to dataframe")
         for agg_df in self.aggregate_dataframes:
             agg_df.fill_from_1m_dataframe(self)
@@ -52,15 +46,16 @@ class KlineDataFrame:
     async def process_kline(self, kline: BinanceKlineData):
         if kline.is_closed:
             print(f"Processing kline: {kline}")
-            self.add_row(kline)
+            self.add_kline(kline)
+            print(f"📊 Processed 1-min candle: O:{kline.open_price:.2f} H:{kline.high_price:.2f} L:{kline.low_price:.2f} C:{kline.close_price:.2f}")
+
             self.calculate_tas()
             
-            print(self.df)
             # Check aggregations for all registered aggregate dataframes
             for agg_df in self.aggregate_dataframes:
                 agg_result = agg_df.aggregate(self)
                 if agg_result:
-                    print(agg_df.get_dataframe())
+                    print(f"✅ {agg_df.interval_in_minutes}-min aggregation completed")
 
     def calculate_tas(self):
         start_time = time.time()
@@ -69,53 +64,5 @@ class KlineDataFrame:
         print(f"⏱️ Technical Analysis calculation completed in {execution_time:.4f} seconds")
 
     def add_row(self, candle: BinanceKlineData):
-        # Check if this open_time already exists (O(1) average case with hash lookup)
-        if len(self.df) > 0 and candle.open_time in self.df['open_time'].values:
-            # Update existing row instead of adding duplicate
-            mask = self.df['open_time'] == candle.open_time
-            self.df.loc[mask, 'close_price'] = candle.close_price
-            self.df.loc[mask, 'high_price'] = candle.high_price
-            self.df.loc[mask, 'low_price'] = candle.low_price
-            self.df.loc[mask, 'volume'] = candle.volume
-            self.df.loc[mask, 'quote_volume'] = candle.quote_volume
-            self.df.loc[mask, 'trades_count'] = candle.trades_count
-            self.df.loc[mask, 'taker_buy_volume'] = candle.taker_buy_volume
-            self.df.loc[mask, 'taker_buy_quote_volume'] = candle.taker_buy_quote_volume
-            self.df.loc[mask, 'is_closed'] = candle.is_closed
-            return
-        
-        # Convert the dataclass to a dictionary
-        candle_dict = {
-            'symbol': candle.symbol,
-            'interval': candle.interval,
-            'open_time': candle.open_time,
-            'close_time': candle.close_time,
-            'open_price': candle.open_price,
-            'high_price': candle.high_price,
-            'low_price': candle.low_price,
-            'close_price': candle.close_price,
-            'volume': candle.volume,
-            'quote_volume': candle.quote_volume,
-            'trades_count': candle.trades_count,
-            'taker_buy_volume': candle.taker_buy_volume,
-            'taker_buy_quote_volume': candle.taker_buy_quote_volume,
-            'is_closed': candle.is_closed
-        }
-        
-        # Add the new row to the dataframe
-        new_row = pd.DataFrame([candle_dict])
-        self.df = pd.concat([self.df, new_row], ignore_index=True)               
-    
-    def __str__(self):
-        return f"KlineDataFrame with {len(self.df)} rows:\n{self.df.to_string()}"
-    
-    def __repr__(self):
-        return self.__str__()
-    
-    def get_dataframe(self):
-        """Get the underlying pandas DataFrame"""
-        return self.df
-    
-    def get_latest(self, n: int = 5):
-        """Get the latest n rows"""
-        return self.df.tail(n)
+        """Alias for add_kline for backward compatibility"""
+        self.add_kline(candle)
