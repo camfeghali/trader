@@ -5,6 +5,7 @@ from dataframe import KlineDataFrame
 from ta_calculator import TaCalculator
 from daos import BinanceDataProcessor
 import time
+from aggregated_dataframe import AggregateDataFrame
 
 app = FastAPI()
 
@@ -28,7 +29,7 @@ async def startup_event():
 
     # Create Binance WebSocket client instance
     binance_client = BinanceWebSocketClient(symbol=symbol, interval=interval)
-    kline_df = KlineDataFrame(TaCalculator(), BinanceDataProcessor())
+    kline_df = KlineDataFrame(TaCalculator(), BinanceDataProcessor(), [AggregateDataFrame(3)])
     
     # Override the default process_kline method
     binance_client.process_kline = kline_df.process_kline 

@@ -4,9 +4,11 @@ from models import BinanceKlineData
 from ta_calculator import TaCalculator
 from daos import BinanceDataProcessor
 import time
+from typing import List
+from aggregated_dataframe import AggregateDataFrame
 
 class KlineDataFrame:
-    def __init__(self, ta_calculator: TaCalculator, data_fetcher: BinanceDataProcessor):
+    def __init__(self, ta_calculator: TaCalculator, data_fetcher: BinanceDataProcessor, aggregate_dataframes: List[AggregateDataFrame]):
         init_cols = [
             "symbol", "interval", 
             "open_time", "close_time", 
@@ -17,6 +19,7 @@ class KlineDataFrame:
         self.df = pd.DataFrame(columns=init_cols)
         self.ta_calculator = ta_calculator
         self.data_fetcher = data_fetcher
+        self.aggregate_dataframes = aggregate_dataframes
 
     async def get_historical_data(self, symbol: str, interval: str, start_ms: int, end_ms: int):
         all_rows = []
@@ -42,20 +45,26 @@ class KlineDataFrame:
                 )
                 
                 self.add_row(kline_data)
-        
         print(f"Added {len(self.df)} historical klines to dataframe")
+        for agg_df in self.aggregate_dataframes:
+            agg_df.fill_from_1m_dataframe(self)
 
     async def process_kline(self, kline: BinanceKlineData):
         if kline.is_closed:
+            print(f"Processing kline: {kline}")
             self.add_row(kline)
             self.calculate_tas()
-        print(self.get_dataframe(['open_time', 'close_price', 'open_price', 'close_price', 'high_price', 'low_price', 'ema_9', 'ema_21', 'ema_50']))
+            
+            print(self.df)
+            # Check aggregations for all registered aggregate dataframes
+            for agg_df in self.aggregate_dataframes:
+                agg_result = agg_df.aggregate(self)
+                if agg_result:
+                    print(agg_df.get_dataframe())
 
     def calculate_tas(self):
         start_time = time.time()
-        
         self.df = self.ta_calculator.calculate_all_indicators(self.df)
-        
         execution_time = time.time() - start_time
         print(f"⏱️ Technical Analysis calculation completed in {execution_time:.4f} seconds")
 
@@ -95,11 +104,7 @@ class KlineDataFrame:
         
         # Add the new row to the dataframe
         new_row = pd.DataFrame([candle_dict])
-        self.df = pd.concat([self.df, new_row], ignore_index=True)
-        
-        # Keep only last 100 rows
-        if len(self.df) > 100:
-            self.df = self.df.tail(100)         
+        self.df = pd.concat([self.df, new_row], ignore_index=True)               
     
     def __str__(self):
         return f"KlineDataFrame with {len(self.df)} rows:\n{self.df.to_string()}"
@@ -107,11 +112,9 @@ class KlineDataFrame:
     def __repr__(self):
         return self.__str__()
     
-    def get_dataframe(self, columns: list[str] = None):
+    def get_dataframe(self):
         """Get the underlying pandas DataFrame"""
-        if columns is None:
-            return self.df
-        return self.df[columns]
+        return self.df
     
     def get_latest(self, n: int = 5):
         """Get the latest n rows"""

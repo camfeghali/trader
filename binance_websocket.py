@@ -32,7 +32,6 @@ class BinanceWebSocketClient:
                     self.reconnect_attempts = 0
                     print(f"✅ Connected to Binance WebSocket: {self.symbol.upper()}/{self.interval}")
                     
-                    # Listen for messages
                     async for message in websocket:
                         await self.handle_message(message)
                         
