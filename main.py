@@ -1,5 +1,6 @@
 from typing import Union
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from binance_websocket import BinanceWebSocketClient
 from dataframe import KlineDataFrame
 from ta_calculator import TaCalculator
@@ -85,11 +86,10 @@ async def get_available_data():
         "available_data": {}
     }
 
-@app.get("/data/latest")
-async def get_latest_data():
+def get_latest_data_dict():
     """
-    Get the latest rows from both 1m and 3m dataframes.
-    Returns 15 rows from 1m dataframe and 5 rows from 3m dataframe.
+    Get the latest data from both 1m and 3m dataframes.
+    Returns a dictionary with the data that can be used by both HTTP and WebSocket endpoints.
     """
     if kline_df is None or agg_3m_df is None:
         return {"error": "Dataframes not initialized"}
@@ -117,4 +117,86 @@ async def get_latest_data():
         
     except Exception as e:
         return {"error": f"Failed to retrieve data: {str(e)}"}
+
+@app.get("/data/latest")
+async def get_latest_data():
+    """
+    Get the latest rows from both 1m and 3m dataframes.
+    Returns 15 rows from 1m dataframe and 5 rows from 3m dataframe.
+    """
+    return get_latest_data_dict()
+
+@app.get("/test-ws")
+async def get_test_ws():
+    """
+    Returns a minimal HTML file that connects to the WebSocket and requests data every second.
+    """
+    html_content = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>WebSocket Test</h1>
+    <p>This page connects to a WebSocket endpoint and requests data every second.</p>
+    <script>
+        const ws = new WebSocket('ws://localhost:8000/ws');
+
+        ws.onopen = () => {
+            console.log('WebSocket connection opened.');
+            ws.send('Hello! You are connected to the trading server.');
+        };
+
+        ws.onmessage = (event) => {
+            console.log('Received message from server:', event.data);
+            // You can parse JSON here if the server sends JSON
+            // const data = JSON.parse(event.data);
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket connection closed.');
+        };
+
+        // Send a message to the server every second
+        setInterval(() => {
+            ws.send('get data');
+        }, 60000);
+    </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html_content)
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Simple WebSocket endpoint for testing connections"""
+    await websocket.accept()
+    print("🔌 Client connected to WebSocket")
+    
+    try:
+        # Send a welcome message
+        await websocket.send_text("Hello! You are connected to the trading server.")
+        
+        # Keep connection alive and handle messages
+        while True:
+            data = await websocket.receive_text()
+            print(f"📨 Received: {data}")
+            
+            # Check if client is requesting latest data
+            if data.lower() == "get data":
+                import json
+                latest_data = get_latest_data_dict()
+                await websocket.send_text(json.dumps(latest_data))
+            else:
+                # Echo back the message
+                await websocket.send_text(f"Server received: {data}")
+            
+    except WebSocketDisconnect:
+        print("🔌 Client disconnected from WebSocket")
+
 
