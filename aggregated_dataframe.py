@@ -25,7 +25,7 @@ class AggregateDataFrame:
         """
         Fill the aggregated dataframe with historical data from a 1-minute dataframe.
         This function processes all available 1-minute data and creates aggregated candles
-        for all complete intervals.
+        for all complete intervals, aligning with standard time boundaries.
         
         Args:
             kline_df: The KlineDataFrame containing 1-minute data
@@ -42,30 +42,47 @@ class AggregateDataFrame:
         # Calculate how many 1-minute candles we need for each aggregated candle
         candles_needed = self.interval_in_minutes
         
-        # Calculate how many complete intervals we can create
-        total_candles = len(kline_df.df)
-        complete_intervals = total_candles // candles_needed
-
-        # Process complete intervals only
+        # Find the first row that starts at a proper interval boundary
+        start_idx = 0
+        for i in range(len(kline_df.df)):
+            first_candle = kline_df.df.iloc[i]
+            if self._is_interval_boundary(first_candle['open_time']):
+                # Check if we have enough data to create a complete interval
+                if i + candles_needed <= len(kline_df.df):
+                    start_idx = i
+                    print(f"Starting aggregation from row {i} (timestamp: {first_candle['open_time']})")
+                    break
+                else:
+                    print(f"Found boundary at row {i} but not enough data for complete interval")
+        
+        # Calculate how many complete intervals we can create from the aligned start
+        remaining_candles = len(kline_df.df) - start_idx
+        complete_intervals = remaining_candles // candles_needed
+        
+        print(f"Starting from row {start_idx}, {remaining_candles} remaining candles, {complete_intervals} complete intervals")
+        
+        # Process complete intervals only, starting from the aligned position
         for interval_idx in range(complete_intervals):
-            start_idx = interval_idx * candles_needed
-            end_idx = start_idx + candles_needed
+            current_start_idx = start_idx + (interval_idx * candles_needed)
+            current_end_idx = current_start_idx + candles_needed
             
             # Get the chunk of data for this interval
-            chunk = kline_df.df.iloc[start_idx:end_idx]
+            chunk = kline_df.df.iloc[current_start_idx:current_end_idx]
+            
+            print(f"Debug: Interval {interval_idx}: selecting rows {current_start_idx} to {current_end_idx}")
+            print(f"Debug: First candle in chunk: open_time={chunk.iloc[0]['open_time']}, close_time={chunk.iloc[0]['close_time']}")
+            print(f"Debug: Last candle in chunk: open_time={chunk.iloc[-1]['open_time']}, close_time={chunk.iloc[-1]['close_time']}")
             
             # Verify we have a complete chunk
             if len(chunk) == candles_needed:
-                # Check if the FIRST candle in this chunk starts at an interval boundary
+                # The first candle should already be at a boundary (we checked this above)
                 first_candle = chunk.iloc[0]
-                if self._is_interval_boundary(first_candle['open_time']):
-                    # Create aggregated kline using existing function
-                    aggregated_kline = self._create_aggregated_kline(chunk, first_candle)
-                    
-                    # Add to dataframe using existing function
-                    self.add_aggregated_kline(aggregated_kline)
-                else:
-                    print(f"⚠️ Interval {interval_idx}: First candle open_time {first_candle['open_time']} is not at boundary")
+                
+                # Create aggregated kline using existing function - pass the first candle as reference
+                aggregated_kline = self._create_aggregated_kline(chunk, first_candle)
+                
+                # Add to dataframe using existing function
+                self.add_aggregated_kline(aggregated_kline)
             else:
                 print(f"⚠️ Interval {interval_idx}: Incomplete chunk, got {len(chunk)} candles, need {candles_needed}")
         
@@ -172,6 +189,8 @@ class AggregateDataFrame:
         
         first_candle_time = candles_df.iloc[0]['open_time']
         last_candle_time = candles_df.iloc[-1]['close_time']
+        
+        print(f"Debug: Aggregated result: open_time={first_candle_time}, close_time={last_candle_time}")
         
         # Create the aggregated kline
         aggregated_kline = BinanceKlineData(
