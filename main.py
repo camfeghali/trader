@@ -7,8 +7,47 @@ from ta_calculator import TaCalculator
 from daos import BinanceDataProcessor
 import time
 from aggregated_dataframe import AggregateDataFrame
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any
 
-app = FastAPI()
+# Pydantic models for API documentation
+class KlineData(BaseModel):
+    """Individual kline data point"""
+    symbol: str
+    interval: str
+    open_time: int
+    close_time: int
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    volume: float
+    quote_volume: float
+    trades_count: int
+    taker_buy_volume: float
+    taker_buy_quote_volume: float
+    is_closed: bool
+
+class DataframeData(BaseModel):
+    """Dataframe data structure"""
+    count: int
+    rows: List[KlineData]
+
+class LatestDataResponse(BaseModel):
+    """Response model for latest data endpoint"""
+    data_1m: DataframeData = Field(alias="1m_data")
+    data_3m: DataframeData = Field(alias="3m_data")
+    timestamp: str
+
+class ErrorResponse(BaseModel):
+    """Error response model"""
+    error: str
+
+app = FastAPI(
+    title="Trading Data API",
+    description="Real-time trading data API with WebSocket support for 1-minute and 3-minute kline data",
+    version="1.0.0"
+)
 
 symbol = "btcusdc"
 interval = "1m"
@@ -48,11 +87,15 @@ async def startup_event():
     asyncio.create_task(binance_client.connect())
     await kline_df.get_historical_data(symbol=symbol, interval="1m", start_ms=start_ms, end_ms=end_ms)
 
-@app.get("/")
+@app.get("/", 
+         summary="Health check",
+         description="Simple health check endpoint")
 def read_root():
     return {"Hello": "World"}
 
-@app.get("/websocket-status")
+@app.get("/websocket-status",
+         summary="Get WebSocket connection status",
+         description="Check if the Binance WebSocket connection is active")
 async def get_websocket_status():
     """Check if Binance WebSocket is connected"""
     if binance_client is None:
@@ -118,7 +161,14 @@ def get_latest_data_dict():
     except Exception as e:
         return {"error": f"Failed to retrieve data: {str(e)}"}
 
-@app.get("/data/latest")
+@app.get("/data/latest",
+         summary="Get latest trading data",
+         description="Retrieve the latest 15 rows from 1-minute dataframe and 5 rows from 3-minute dataframe",
+         response_model=LatestDataResponse,
+         responses={
+             200: {"description": "Latest trading data retrieved successfully"},
+             500: {"description": "Dataframes not initialized", "model": ErrorResponse}
+         })
 async def get_latest_data():
     """
     Get the latest rows from both 1m and 3m dataframes.
@@ -126,7 +176,9 @@ async def get_latest_data():
     """
     return get_latest_data_dict()
 
-@app.get("/test-ws")
+@app.get("/test-ws",
+         summary="WebSocket test page",
+         description="Returns an HTML page that connects to the WebSocket endpoint and requests data every 60 seconds")
 async def get_test_ws():
     """
     Returns a minimal HTML file that connects to the WebSocket and requests data every second.
@@ -174,7 +226,12 @@ async def get_test_ws():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """Simple WebSocket endpoint for testing connections"""
+    """
+    WebSocket endpoint for real-time data.
+    
+    Connect to this WebSocket endpoint to receive real-time trading data. 
+    Send 'get data' to request latest data.
+    """
     await websocket.accept()
     print("🔌 Client connected to WebSocket")
     
