@@ -1,6 +1,7 @@
 import pandas as pd
 import time
 from typing import Optional, TYPE_CHECKING
+from ta_calculator import TaCalculator
 
 if TYPE_CHECKING:
     from dataframe import KlineDataFrame
@@ -9,10 +10,11 @@ from models import BinanceKlineData
 from base_dataframe import BaseDataFrame
 
 class AggregateDataFrame(BaseDataFrame):
-    def __init__(self, interval_in_minutes: int, max_rows: int = 100):
+    def __init__(self, interval_in_minutes: int, max_rows: int = 100, ta_calculator: TaCalculator = None):
         super().__init__()
         self.interval_in_minutes = interval_in_minutes
         self.max_rows = max_rows
+        self.ta_calculator = ta_calculator
 
     def fill_from_1m_dataframe(self, kline_df: 'KlineDataFrame') -> None:
         """
@@ -76,6 +78,7 @@ class AggregateDataFrame(BaseDataFrame):
                 print(f"⚠️ Interval {interval_idx}: Incomplete chunk, got {len(chunk)} candles, need {candles_needed}")
         
         print(f"✅ Filled {self.interval_in_minutes}-min aggregated dataframe with {len(self.df)} candles")
+        self.calculate_tas()
 
     def aggregate(self, kline_df: 'KlineDataFrame') -> Optional[BinanceKlineData]:
         """
@@ -134,7 +137,13 @@ class AggregateDataFrame(BaseDataFrame):
         
         print(f"📊 Aggregated {self.interval_in_minutes}-min candle: O:{aggregated_kline.open_price:.2f} H:{aggregated_kline.high_price:.2f} L:{aggregated_kline.low_price:.2f} C:{aggregated_kline.close_price:.2f}")
         
-        return aggregated_kline
+        self.calculate_tas()
+
+    def calculate_tas(self):
+        start_time = time.time()
+        self.df = self.ta_calculator.calculate_all_indicators(self.df)
+        execution_time = time.time() - start_time
+        print(f"⏱️ Technical Analysis calculation completed in {execution_time:.4f} seconds")
 
     def _is_interval_boundary(self, timestamp_ms: int) -> bool:
         """
