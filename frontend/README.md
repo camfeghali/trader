@@ -1,69 +1,100 @@
-# React + TypeScript + Vite
+# Trading Data Dashboard Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A React-based frontend application that connects to a FastAPI backend via WebSocket to display real-time trading data in tables organized by timeframe.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Real-time WebSocket Connection**: Connects to FastAPI backend websocket endpoint
+- **Multiple Timeframe Tables**: Displays data for each timeframe in separate tables
+- **Last 15 Rows Display**: Shows the most recent 15 rows of data for each timeframe
+- **Connection Status**: Visual indicator of websocket connection status
+- **Error Handling**: Displays connection errors and provides reconnect functionality
+- **Responsive Design**: Modern UI with Tailwind CSS styling
 
-## Expanding the ESLint configuration
+## Prerequisites
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Node.js (v16 or higher)
+- npm or yarn
+- FastAPI backend running on `localhost:8000` with websocket endpoint at `/ws`
 
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Installation
 
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
+1. Install dependencies:
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+2. Start the development server:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
+
+3. Open your browser and navigate to `http://localhost:5173`
+
+## Configuration
+
+You can modify the configuration in `src/config.ts`:
+
+- `websocketUrl`: WebSocket endpoint URL (default: `ws://localhost:8000/ws`)
+- `maxTableRows`: Number of rows to display in each table (default: 15)
+- `reconnectInterval`: Reconnection interval in milliseconds (default: 5000)
+- `maxReconnectAttempts`: Maximum number of reconnection attempts (default: 5)
+
+## Expected WebSocket Message Format
+
+The frontend expects the following JSON message format from the backend:
+
+```json
+{
+  "dataframes": [
+    {
+      "timeframe": "1m",
+      "data": [
+        {
+          "timestamp": "2024-01-01T00:00:00",
+          "open": 100.0,
+          "high": 101.0,
+          "low": 99.0,
+          "close": 100.5,
+          "volume": 1000
+        }
+      ],
+      "columns": ["timestamp", "open", "high", "low", "close", "volume"]
+    }
+  ],
+  "timestamp": "2024-01-01T00:00:00"
+}
+```
+
+## Project Structure
+
+```
+src/
+├── components/
+│   ├── DataTable.tsx      # Table component for displaying dataframe data
+│   └── ConnectionStatus.tsx # WebSocket connection status indicator
+├── hooks/
+│   └── useWebSocket.ts    # Custom hook for WebSocket management
+├── types/
+│   └── data.ts           # TypeScript type definitions
+├── config.ts             # Application configuration
+├── App.tsx               # Main application component
+└── main.tsx              # Application entry point
+```
+
+## Available Scripts
+
+- `npm run dev` - Start development server
+- `npm run build` - Build for production
+- `npm run preview` - Preview production build
+- `npm run lint` - Run ESLint
+
+## Technologies Used
+
+- React 19
+- TypeScript
+- Tailwind CSS
+- Vite
+- WebSocket API

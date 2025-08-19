@@ -1,36 +1,59 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
-import "./index.css";
+import React from 'react';
+import './App.css';
+import './index.css';
+import useWebSocket from './hooks/useWebSocket';
+import DataTable from './components/DataTable';
+import ConnectionStatus from './components/ConnectionStatus';
+import { config } from './config';
 
 function App() {
-  const [count, setCount] = useState(0)
+  // Connect to the FastAPI backend websocket endpoint
+  const { data, isConnected, error, reconnect } = useWebSocket(config.websocketUrl);
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="min-h-screen bg-gray-100 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">
+            Trading Data Dashboard
+          </h1>
+          <p className="text-lg text-gray-600">
+            Real-time market data from multiple timeframes
+          </p>
+        </div>
+
+        <ConnectionStatus
+          isConnected={isConnected}
+          error={error}
+          onReconnect={reconnect}
+        />
+
+        {data.length === 0 && isConnected && (
+          <div className="text-center py-12">
+            <div className="text-gray-500 text-lg">
+              Waiting for data...
+            </div>
+          </div>
+        )}
+
+        {data.length > 0 && (
+          <div className="space-y-8">
+            {data.map((tableData, index) => (
+              <DataTable key={`${tableData.timeframe}-${index}`} tableData={tableData} />
+            ))}
+          </div>
+        )}
+
+        {!isConnected && !error && (
+          <div className="text-center py-12">
+            <div className="text-gray-500 text-lg">
+              Connecting to server...
+            </div>
+          </div>
+        )}
       </div>
-      <h1 className="text-4xl font-bold text-blue-600">Hello Tailwind + Vite!</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    </div>
+  );
 }
 
-export default App
+export default App;
