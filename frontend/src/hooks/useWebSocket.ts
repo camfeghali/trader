@@ -33,31 +33,20 @@ const useWebSocket = (url: string): UseWebSocketReturn => {
                     const data = event.data.trim();
                     if (data.startsWith('{') || data.startsWith('[')) {
                         const message: WebSocketMessage = JSON.parse(data);
-
+                        console.log('message', message);
                         // Transform the server response into TableData format programmatically
                         const tableData: TableData[] = [];
 
-                        // Add 1m data if it exists
-                        if (message['1m_data']) {
-                            tableData.push({
-                                timeframe: '1m',
-                                data: message['1m_data'].rows,
-                                columns: message['1m_data'].rows.length > 0
-                                    ? Object.keys(message['1m_data'].rows[0])
-                                    : []
-                            });
-                        }
-
-                        // Add all other timeframe data dynamically
+                        // Handle all timeframe data keys programmatically
                         Object.keys(message).forEach(key => {
                             // Skip non-dataframe keys
-                            if (key === 'timestamp' || key === '1m_data') {
+                            if (key === 'timestamp') {
                                 return;
                             }
 
-                            // Check if it's a timeframe data key (e.g., "3m_data", "5m_data", etc.)
+                            // Check if it's a timeframe data key (e.g., "1m_data", "3m_data", "5m_data", etc.)
                             if (key.endsWith('_data')) {
-                                const timeframe = key.replace('_data', ''); // Extract "3m", "5m", etc.
+                                const timeframe = key.replace('_data', ''); // Extract "1m", "3m", "5m", etc.
                                 const dataValue = message[key];
 
                                 // Type guard to ensure it's DataFrameData
