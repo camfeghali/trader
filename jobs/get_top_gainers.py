@@ -582,7 +582,7 @@ def main():
     args = sys.argv[1:]
     
     # Default parameters
-    periods = 12
+    periods = 3
     threshold_pct = 100.0
     max_workers = 10
     

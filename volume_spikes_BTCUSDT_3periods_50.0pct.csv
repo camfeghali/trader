@@ -1,2 +1,0 @@
-symbol,price_change_percent,last_price,quote_volume,count,trading_venue,high_24h,low_24h,volume_spike_pct,last_volume,avg_prev_volume,periods_used,is_bullish
-BTCUSDT,2.702,115575.72,2804819309.934859,3393105,Spot Only,117429.05,111684.79,-71.2,3845242.9073451,13364673.15281675,2,True
