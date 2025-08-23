@@ -22,7 +22,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any
+import talib
 
 
 class BinanceVolumeSpikeDetector:
@@ -253,53 +254,103 @@ class BinanceVolumeSpikeDetector:
                 else:
                     return []
     
-    def detect_volume_spikes(self, df: pd.DataFrame, periods: int = 5, threshold_pct: float = 100.0) -> pd.DataFrame:
+    def calculate_volume_emas(self, volumes: List[float], ema_periods: List[int] = [9, 21, 50]) -> Dict[str, float]:
+        """Calculate volume EMAs for the given periods."""
+        if not volumes or len(volumes) < max(ema_periods):
+            # Return NaN for all requested EMAs if insufficient data
+            return {f'ema_{period}': np.nan for period in ema_periods}
+        
+        # Convert to numpy array for talib
+        volume_array = np.array(volumes, dtype=float)
+        
+        # Calculate EMAs for all requested periods
+        ema_results = {}
+        for period in ema_periods:
+            if len(volumes) >= period:
+                ema_values = talib.EMA(volume_array, timeperiod=period)
+                ema_results[f'ema_{period}'] = ema_values[-1] if not np.isnan(ema_values[-1]) else np.nan
+            else:
+                ema_results[f'ema_{period}'] = np.nan
+        
+        return ema_results
+    
+    def detect_volume_spikes(self, df: pd.DataFrame, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
         """Detect volume spikes by comparing last candle to previous N-1 candles."""
-        print(f"🔍 Detecting volume spikes using {periods} periods with {threshold_pct}% threshold")
+        print(f"🔍 Detecting volume spikes using {periods} periods of data")
+        print(f"📊 Comparing last candle to previous {spike_periods-1} candles")
+        print(f"🎯 Threshold: {threshold_pct}%")
         print(f"🚀 Using {self.max_workers} parallel workers")
+        print(f"📈 Calculating volume EMAs for periods: {ema_periods}")
         
         symbols = df['symbol'].tolist()
         
         def calc(symbol: str) -> tuple:
             vols = self.get_historical_quote_volumes(symbol, periods)
             if len(vols) != periods:
-                return symbol, np.nan, np.nan, np.nan, np.nan, np.nan
+                # Return tuple with dynamic EMA values
+                ema_values = [np.nan] * len(ema_periods)
+                return (symbol, np.nan, np.nan, np.nan, np.nan, np.nan) + tuple(ema_values)
             
             last_volume = vols[-1]  # Most recent candle
-            prev_volumes = vols[:-1]  # Previous N-1 candles
+            # Use spike_periods to determine how many previous candles to compare against
+            if len(vols) >= spike_periods:
+                prev_volumes = vols[-spike_periods:-1]  # Previous spike_periods-1 candles
+            else:
+                prev_volumes = vols[:-1]  # All previous candles if not enough data
             avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else np.nan
+            
+            # Calculate volume EMAs
+            volume_emas = self.calculate_volume_emas(vols, ema_periods)
             
             # Get price data for the last candle
             price_data = self.get_historical_price_data(symbol, periods)
             if len(price_data) != periods:
-                return symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), np.nan
+                # Return tuple with dynamic EMA values
+                ema_values = [volume_emas.get(f'ema_{period}', np.nan) for period in ema_periods]
+                return (symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), np.nan) + tuple(ema_values)
             
             last_open = price_data[-1]['open']
             last_close = price_data[-1]['close']
             is_bullish = last_close > last_open
             
+            # Get EMA values in order
+            ema_values = [volume_emas.get(f'ema_{period}', np.nan) for period in ema_periods]
+            
             if avg_prev_volume and avg_prev_volume > 0:
                 spike_pct = ((last_volume - avg_prev_volume) / avg_prev_volume) * 100
-                return symbol, round(spike_pct, 1), last_volume, avg_prev_volume, len(prev_volumes), is_bullish
+                return (symbol, round(spike_pct, 1), last_volume, avg_prev_volume, len(prev_volumes), is_bullish) + tuple(ema_values)
             else:
-                return symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), is_bullish
+                return (symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), is_bullish) + tuple(ema_values)
         
         spike_results = {}
         last_volume_results = {}
         avg_volume_results = {}
         periods_used_results = {}
         bullish_results = {}
+        ema_results = {period: {} for period in ema_periods}
         completed = 0
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             futures = {ex.submit(calc, s): s for s in symbols}
             for f in as_completed(futures):
-                sym, spike_pct, last_vol, avg_vol, periods_used, is_bullish = f.result()
+                result = f.result()
+                sym = result[0]
+                spike_pct = result[1]
+                last_vol = result[2]
+                avg_vol = result[3]
+                periods_used = result[4]
+                is_bullish = result[5]
+                
                 spike_results[sym] = spike_pct
                 last_volume_results[sym] = last_vol
                 avg_volume_results[sym] = avg_vol
                 periods_used_results[sym] = periods_used
                 bullish_results[sym] = is_bullish
+                
+                # Store EMA results
+                for i, period in enumerate(ema_periods):
+                    ema_results[period][sym] = result[6 + i]
+                
                 completed += 1
                 if completed % 20 == 0 or completed == len(symbols):
                     print(f"   Progress: {completed}/{len(symbols)}")
@@ -310,18 +361,24 @@ class BinanceVolumeSpikeDetector:
         df["periods_used"] = [periods_used_results.get(s, np.nan) for s in symbols]
         df["is_bullish"] = [bullish_results.get(s, np.nan) for s in symbols]
         
+        # Add EMA columns dynamically
+        for period in ema_periods:
+            df[f"volume_ema_{period}"] = [ema_results[period].get(s, np.nan) for s in symbols]
+        
         return df
     
-    def get_volume_spikes(self, periods: int = 5, threshold_pct: float = 100.0, 
-                         min_volume_usdt: float = 100000, limit: int = 50) -> pd.DataFrame:
+    def get_volume_spikes(self, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, 
+                         min_volume_usdt: float = 100000, limit: int = 50, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
         """
         Get trading pairs with volume spikes above threshold.
         
         Args:
-            periods: Number of 15-minute periods to analyze (default: 5)
+            periods: Number of 15-minute periods to fetch data (default: 50)
+            spike_periods: Number of previous periods to compare last candle against (default: 5)
             threshold_pct: Minimum spike percentage to include (default: 100%)
             min_volume_usdt: Minimum 24h volume in USDT to filter by
             limit: Maximum number of results to return
+            ema_periods: List of EMA periods to calculate
             
         Returns:
             DataFrame sorted by volume spike percentage (descending)
@@ -353,7 +410,7 @@ class BinanceVolumeSpikeDetector:
         print(f"📈 Filtered to {len(df)} pairs with volume >= ${min_volume_usdt:,.0f}")
         
         # Detect volume spikes
-        df = self.detect_volume_spikes(df, periods=periods, threshold_pct=threshold_pct)
+        df = self.detect_volume_spikes(df, periods=periods, spike_periods=spike_periods, threshold_pct=threshold_pct, ema_periods=ema_periods)
         
         # Filter for positive spikes above threshold only
         df_spikes = df[(df['volume_spike_pct'] >= threshold_pct) & (df['volume_spike_pct'] > 0)].copy()
@@ -373,7 +430,7 @@ class BinanceVolumeSpikeDetector:
         
         return top_spikes
     
-    def get_volume_spikes_single_symbol(self, symbol: str, periods: int = 5, threshold_pct: float = 100.0) -> pd.DataFrame:
+    def get_volume_spikes_single_symbol(self, symbol: str, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
         """
         Get volume spike analysis for a single symbol.
         
@@ -426,7 +483,7 @@ class BinanceVolumeSpikeDetector:
         df = self.create_dataframe([ticker_data])
         
         # Detect volume spikes
-        df = self.detect_volume_spikes(df, periods=periods, threshold_pct=threshold_pct)
+        df = self.detect_volume_spikes(df, periods=periods, spike_periods=spike_periods, threshold_pct=threshold_pct, ema_periods=ema_periods)
         
         # Filter for spikes above threshold (if any)
         if not df.empty and 'volume_spike_pct' in df.columns:
@@ -448,7 +505,7 @@ class BinanceVolumeSpikeDetector:
         
         return df
     
-    def print_results(self, df: pd.DataFrame, title: str):
+    def print_results(self, df: pd.DataFrame, title: str, ema_periods: List[int] = [9, 21, 50]):
         """Print results in a formatted table."""
         if df.empty:
             print(f"❌ No results found for {title}")
@@ -466,6 +523,11 @@ class BinanceVolumeSpikeDetector:
         )
         display_df['volume_spike_pct'] = display_df['volume_spike_pct'].apply(
             lambda x: f"🔥 +{x:.0f}%" if pd.notna(x) and x > 0 else f"📉 {x:.0f}%" if pd.notna(x) else "N/A"
+        )
+        
+        # Format bullish/bearish column
+        display_df['is_bullish'] = display_df['is_bullish'].apply(
+            lambda x: "🟢 Bullish" if x == True else "🔴 Bearish" if x == False else "❓ Unknown"
         )
         
         # Format price columns
@@ -490,14 +552,41 @@ class BinanceVolumeSpikeDetector:
             lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
         )
         
-        # Select and order columns
-        columns_to_show = ['symbol', 'price_change_percent', 'last_price', 'quote_volume', 
-                          'volume_spike_pct', 'last_volume', 'avg_prev_volume', 'trading_venue', 
-                          'high_24h', 'low_24h']
+        # Format volume EMA columns dynamically
+        for period in ema_periods:
+            ema_col = f'volume_ema_{period}'
+            if ema_col in display_df.columns:
+                display_df[ema_col] = display_df[ema_col].apply(
+                    lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
+                )
+        
+        # Select and order columns dynamically
+        base_columns = ['symbol', 'price_change_percent', 'last_price', 'quote_volume', 
+                       'volume_spike_pct', 'last_volume', 'avg_prev_volume']
+        
+        # Add EMA columns dynamically
+        ema_columns = [f'volume_ema_{period}' for period in ema_periods]
+        
+        remaining_columns = ['is_bullish', 'trading_venue', 'high_24h', 'low_24h']
+        columns_to_show = base_columns + ema_columns + remaining_columns
+        
+        # Filter to only include columns that exist
+        columns_to_show = [col for col in columns_to_show if col in display_df.columns]
         display_df = display_df[columns_to_show]
-        display_df.columns = ['Symbol', '24h Change %', 'Last Price', '24h Volume', 
-                             'Volume Spike %', 'Last 15m Vol', 'Avg Prev Vol', 'Trading Venue', 
-                             '24h High', '24h Low']
+        
+        # Create column headers dynamically
+        base_headers = ['Symbol', '24h Change %', 'Last Price', '24h Volume', 
+                       'Volume Spike %', 'Last 15m Vol', 'Avg Prev Vol']
+        
+        # Add EMA headers dynamically
+        ema_headers = [f'Vol EMA{period}' for period in ema_periods]
+        
+        remaining_headers = ['Candle', 'Trading Venue', '24h High', '24h Low']
+        column_headers = base_headers + ema_headers + remaining_headers
+        
+        # Filter headers to match the actual columns
+        column_headers = column_headers[:len(columns_to_show)]
+        display_df.columns = column_headers
         
         # Print the table
         pd.set_option('display.max_columns', None)
@@ -582,9 +671,11 @@ def main():
     args = sys.argv[1:]
     
     # Default parameters
-    periods = 3
+    periods = 50  # Need at least 50 periods for EMA 50 calculation
+    spike_periods = 5  # Compare last candle to previous 4 candles
     threshold_pct = 100.0
     max_workers = 10
+    ema_periods = [9, 21, 50]  # Default EMA periods
     
     # Parse arguments
     single_symbol = None
@@ -594,6 +685,12 @@ def main():
         if arg.startswith('workers:'):
             try:
                 max_workers = int(arg.split(':')[1])
+            except (ValueError, IndexError):
+                pass
+        elif arg.startswith('emas:'):
+            try:
+                ema_str = arg.split(':')[1]
+                ema_periods = [int(x.strip()) for x in ema_str.split(',')]
             except (ValueError, IndexError):
                 pass
         elif arg.startswith('debug:'):
@@ -623,9 +720,12 @@ def main():
     if len(numeric_args) >= 1:
         periods = int(numeric_args[0])
     if len(numeric_args) >= 2:
-        threshold_pct = numeric_args[1]
+        spike_periods = int(numeric_args[1])
+    if len(numeric_args) >= 3:
+        threshold_pct = numeric_args[2]
     
-    print(f"📊 Parameters: {periods} periods, {threshold_pct}% threshold, {max_workers} workers")
+    print(f"📊 Parameters: {periods} data periods, {spike_periods} spike periods, {threshold_pct}% threshold, {max_workers} workers")
+    print(f"📈 EMA periods: {ema_periods}")
     
     # Create detector and get results
     detector = BinanceVolumeSpikeDetector(max_workers=max_workers)
@@ -635,20 +735,24 @@ def main():
         results = detector.get_volume_spikes_single_symbol(
             symbol=single_symbol,
             periods=periods,
-            threshold_pct=threshold_pct
+            spike_periods=spike_periods,
+            threshold_pct=threshold_pct,
+            ema_periods=ema_periods
         )
-        title = f"🔥 Volume Spike Analysis for {single_symbol} (Last {periods} periods, >= {threshold_pct}% threshold)"
+        title = f"🔥 Volume Spike Analysis for {single_symbol} (Last {periods} periods, spike: {spike_periods}, >= {threshold_pct}% threshold)"
     else:
         results = detector.get_volume_spikes(
             periods=periods,
+            spike_periods=spike_periods,
             threshold_pct=threshold_pct,
             min_volume_usdt=100000,
-            limit=50
+            limit=50,
+            ema_periods=ema_periods
         )
-        title = f"🔥 Top Volume Spikes (Last {periods} periods, >= {threshold_pct}% threshold)"
+        title = f"🔥 Top Volume Spikes (Last {periods} periods, spike: {spike_periods}, >= {threshold_pct}% threshold)"
     
     # Print results
-    detector.print_results(results, title)
+    detector.print_results(results, title, ema_periods=ema_periods)
     
     # Save to CSV
     if not results.empty:
