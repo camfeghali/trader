@@ -55,7 +55,6 @@ interval = "1m"
 # Global variables to store instances
 kline_df = None
 binance_client = None
-agg_3m_df = None
 
 # Use proper datetime calculation like in get_historical_data.py
 from datetime import datetime, timezone, timedelta
@@ -63,7 +62,7 @@ from datetime import datetime, timezone, timedelta
 def to_ms(dt: datetime) -> int:
     return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
-start_dt = datetime(2025, 8, 1, tzinfo=timezone.utc)
+start_dt = datetime(2025, 8, 19, tzinfo=timezone.utc)
 end_dt   = datetime.now(timezone.utc)
 start_ms, end_ms = to_ms(start_dt), to_ms(end_dt)
 
@@ -71,15 +70,14 @@ start_ms, end_ms = to_ms(start_dt), to_ms(end_dt)
 async def startup_event():
     """Start Binance WebSocket connection when app starts"""
     import asyncio
-    global kline_df, binance_client, agg_3m_df
+    global kline_df, binance_client
     ta_calculator = TaCalculator()  
-
-    # Create aggregated dataframe for 3m
-    agg_3m_df = AggregateDataFrame(interval_in_minutes=3, ta_calculator=ta_calculator)
     
     # Create Binance WebSocket client instance
     binance_client = BinanceWebSocketClient(symbol=symbol, interval=interval)
-    kline_df = KlineDataFrame(ta_calculator, BinanceDataProcessor(), [agg_3m_df])
+    kline_df = KlineDataFrame(ta_calculator, BinanceDataProcessor(), [
+        AggregateDataFrame(interval_in_minutes=3, ta_calculator=ta_calculator), 
+        AggregateDataFrame(interval_in_minutes=5, ta_calculator=ta_calculator)])
     
     # Override the default process_kline method
     binance_client.process_kline = kline_df.process_kline 
@@ -131,32 +129,43 @@ async def get_available_data():
 
 def get_latest_data_dict():
     """
-    Get the latest data from both 1m and 3m dataframes.
+    Get the latest data from 1m dataframe and all aggregate dataframes.
     Returns a dictionary with the data that can be used by both HTTP and WebSocket endpoints.
     """
-    if kline_df is None or agg_3m_df is None:
+    if kline_df is None:
         return {"error": "Dataframes not initialized"}
     
     try:
-        # Get latest 15 rows from 1m dataframe
-        latest_1m = kline_df.get_latest(15)
-        latest_3m = agg_3m_df.get_latest(5)
-        
-        # Convert DataFrames to dictionaries for JSON serialization
-        latest_1m_dict = latest_1m.to_dict('records') if not latest_1m.empty else []
-        latest_3m_dict = latest_3m.to_dict('records') if not latest_3m.empty else []
-        
-        return {
-            "1m_data": {
-                "count": len(latest_1m_dict),
-                "rows": latest_1m_dict
-            },
-            "3m_data": {
-                "count": len(latest_3m_dict),
-                "rows": latest_3m_dict
-            },
+        # Build response with all dataframes
+        response = {
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        
+        # Add 1m dataframe
+        latest_1m = kline_df.get_latest(15)
+        latest_1m_dict = latest_1m.to_dict('records') if not latest_1m.empty else []
+        response["1m_data"] = {
+            "count": len(latest_1m_dict),
+            "rows": latest_1m_dict
+        }
+        
+        # Add all aggregate dataframes
+        for agg_df in kline_df.get_aggregated_dataframes():
+            # Calculate sensible row count: more rows for longer intervals
+            # 3m = 15 rows, 5m = 12 rows, 15m = 8 rows, 1h = 6 rows, etc.
+            row_count = max(5, 20 - (agg_df.interval_in_minutes // 5))
+            
+            latest_agg = agg_df.get_latest(row_count)
+            latest_agg_dict = latest_agg.to_dict('records') if not latest_agg.empty else []
+            
+            # Use interval as key (e.g., "3m_data", "5m_data", "15m_data")
+            interval_key = f"{agg_df.interval_in_minutes}m_data"
+            response[interval_key] = {
+                "count": len(latest_agg_dict),
+                "rows": latest_agg_dict
+            }
+        
+        return response
         
     except Exception as e:
         return {"error": f"Failed to retrieve data: {str(e)}"}

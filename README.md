@@ -20,6 +20,7 @@
 
 # Refs
 
+- [Jon kurisko](https://www.youtube.com/watch?v=PjigwAmhiT0&ab_channel=EtienneCrete-DesireToTRADE)
 - <https://www.youtube.com/watch?v=TT_D-4z-4zY&ab_channel=CodeTrading>
 - [Thinking about strategy](https://chatgpt.com/share/689b65a1-eba8-800f-a2e0-ab89267cbee3)
 - [Multi-layered strategy](https://chatgpt.com/s/t_689b70c49f508191b42f6c32fa4e1051)
@@ -35,6 +36,10 @@
 Use multi-timeframe confirmation (e.g., 5m for entry, 1h for trend)
 
 Keep rules simple, risk small, and let winners run.
+
+## TA lib, pattern options
+
+- [options](https://chatgpt.com/c/68a60fd3-a7fc-8332-8008-2c06c26a147d)
 
 ## Example signal generation
 

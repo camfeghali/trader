@@ -20,7 +20,7 @@ class TaCalculator:
         """
         if len(df) < period:
             return df
-        df['rsi'] = talib.RSI(df[column], timeperiod=period)
+        df[f'rsi_{period}'] = talib.RSI(df[column], timeperiod=period)
         return df
 
     def calculate_ema(self, df: pd.DataFrame, column: str = 'close_price', period: int = 9):
@@ -76,9 +76,9 @@ class TaCalculator:
         if len(df) < slowperiod:
             return df
         macd, signal, hist = talib.MACD(df[column], fastperiod=fastperiod, slowperiod=slowperiod, signalperiod=signalperiod)
-        df['macd'] = macd
-        df['macd_signal'] = signal
-        df['macd_hist'] = hist
+        df[f'macd_fast_{fastperiod}'] = macd
+        df[f'macd_signal_{signalperiod}'] = signal
+        df[f'macd_hist_{signalperiod}'] = hist
         return df
 
     def calculate_stochastic(self, df: pd.DataFrame, fastk_period: int = 14, slowk_period: int = 3, slowd_period: int = 3):
@@ -99,8 +99,8 @@ class TaCalculator:
             return df
         slowk, slowd = talib.STOCH(df['high_price'], df['low_price'], df['close_price'], 
                                   fastk_period=fastk_period, slowk_period=slowk_period, slowd_period=slowd_period)
-        df['stoch_k'] = slowk
-        df['stoch_d'] = slowd
+        df[f'stoch_slowk_{slowk_period}'] = slowk
+        df[f'stoch_slowd_{slowd_period}'] = slowd
         return df
 
     def calculate_williams_r(self, df: pd.DataFrame, period: int = 14):
@@ -116,7 +116,7 @@ class TaCalculator:
         """
         if len(df) < period:
             return df
-        df['williams_r'] = talib.WILLR(df['high_price'], df['low_price'], df['close_price'], timeperiod=period)
+        df[f'williams_r_{period}'] = talib.WILLR(df['high_price'], df['low_price'], df['close_price'], timeperiod=period)
         return df
 
     def calculate_bollinger_bands(self, df: pd.DataFrame, column: str = 'close_price', period: int = 20, nbdevup: float = 2, nbdevdn: float = 2):
@@ -136,9 +136,9 @@ class TaCalculator:
         if len(df) < period:
             return df
         upper, middle, lower = talib.BBANDS(df[column], timeperiod=period, nbdevup=nbdevup, nbdevdn=nbdevdn)
-        df['bb_upper'] = upper
-        df['bb_middle'] = middle
-        df['bb_lower'] = lower
+        df[f'bb_upper_{period}'] = upper
+        df[f'bb_middle_{period}'] = middle
+        df[f'bb_lower_{period}'] = lower
         return df
 
     def calculate_atr(self, df: pd.DataFrame, period: int = 14):
@@ -154,7 +154,7 @@ class TaCalculator:
         """
         if len(df) < period:
             return df
-        df['atr_14'] = talib.ATR(df['high_price'], df['low_price'], df['close_price'], timeperiod=period)
+        df[f'atr_{period}'] = talib.ATR(df['high_price'], df['low_price'], df['close_price'], timeperiod=period)
         return df
 
     def calculate_donchian_channel(self, df: pd.DataFrame, period: int = 20):
@@ -170,8 +170,8 @@ class TaCalculator:
         """
         if len(df) < period:
             return df
-        df['donchian_high'] = df['high_price'].rolling(window=period).max()
-        df['donchian_low'] = df['low_price'].rolling(window=period).min()
+        df[f'donchian_high_{period}'] = df['high_price'].rolling(window=period).max()
+        df[f'donchian_low_{period}'] = df['low_price'].rolling(window=period).min()
         return df
 
     def calculate_obv(self, df: pd.DataFrame):
@@ -202,7 +202,7 @@ class TaCalculator:
         """
         if len(df) < period:
             return df
-        df['vol_sma'] = talib.SMA(df['volume'], timeperiod=period)
+        df[f'vol_sma_{period}'] = talib.SMA(df['volume'], timeperiod=period)
         return df
 
     def calculate_cmf(self, df: pd.DataFrame, period: int = 20):
@@ -227,7 +227,7 @@ class TaCalculator:
         mfv = mfm * df['volume']
         
         # Calculate CMF
-        df['cmf'] = mfv.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
+        df[f'cmf_{period}'] = mfv.rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
         return df
 
     def calculate_all_indicators(self, df: pd.DataFrame):
@@ -244,8 +244,6 @@ class TaCalculator:
         df = self.calculate_ema(df, 'close_price', 21)
         df = self.calculate_ema(df, 'close_price', 50)
         df = self.calculate_ema(df, 'close_price', 200)
-        df = self.calculate_sma(df, 'close_price', 50)
-        df = self.calculate_sma(df, 'close_price', 200)
         
         # Momentum Indicators
         df = self.calculate_rsi(df, 'close_price', 14)

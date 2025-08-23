@@ -66,3 +66,6 @@ class KlineDataFrame(BaseDataFrame):
     def add_row(self, candle: BinanceKlineData):
         """Alias for add_kline for backward compatibility"""
         self.add_kline(candle)
+
+    def get_aggregated_dataframes(self):
+        return self.aggregate_dataframes
