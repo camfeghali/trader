@@ -1,0 +1,2 @@
+symbol,price_change_percent,last_price,quote_volume,count,trading_venue,high_24h,low_24h,volume_spike_pct,last_volume,avg_prev_volume,periods_used,is_bullish,volume_ema_9,volume_ema_21,price_ema_9,price_ema_21
+BTCUSDT,2.403,115191.08,2652855165.971698,3144467,Spot Only,117429.05,111932.28,14.8,14222920.6548081,12388453.500993231,3,False,12063598.269806536,11774731.561938314,115411.4865284734,115555.63070548

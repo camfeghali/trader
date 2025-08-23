@@ -20,6 +20,7 @@ import pandas as pd
 import numpy as np
 import sys
 import time
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import List, Dict, Any
@@ -69,7 +70,7 @@ class BinanceVolumeSpikeDetector:
     
     def filter_stablecoin_pairs(self, tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter to stablecoin and BNB pairs only."""
-        stablecoins = ["USDC"]
+        stablecoins = ["USDC", "USDT"]
         quote_assets = stablecoins + ["BNB"]
         
         stablecoin_pairs = []
@@ -201,6 +202,55 @@ class BinanceVolumeSpikeDetector:
                     print(f"❌ Error fetching historical data for {symbol} after {max_retries} attempts: {e}")
                     return []
     
+    def get_historical_quote_volumes_with_timestamps(self, symbol: str, periods: int = 5) -> List[Dict[str, Any]]:
+        """Get historical quote volumes with timestamps for the last N 15-minute periods."""
+        # Retry logic for network requests
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Calculate time range for closed candles
+                server_now_ms = self._get_server_time_ms()
+                period_ms = 15 * 60 * 1000  # 15 minutes in milliseconds
+                current_open = (server_now_ms // period_ms) * period_ms
+                end_time = current_open - 1
+                start_time = end_time - (periods * period_ms) + 1
+                
+                params = {
+                    "symbol": symbol,
+                    "interval": "15m",
+                    "startTime": start_time,
+                    "endTime": end_time,
+                    "limit": periods
+                }
+                
+                response = self.session.get(f"{self.base_url}/klines", params=params, timeout=15)
+                response.raise_for_status()
+                klines = response.json()
+                
+                if not isinstance(klines, list) or len(klines) != periods:
+                    return []
+                
+                result = []
+                for k in klines:
+                    timestamp = int(k[0])  # Open time
+                    volume = float(k[7])   # Quote volume
+                    result.append({
+                        'timestamp': timestamp,
+                        'datetime': datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S UTC'),
+                        'volume': volume
+                    })
+                return result
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                else:
+                    print(f"❌ Error fetching historical data for {symbol} after {max_retries} attempts: {e}")
+                    return []
+        
+        return []
+    
     def get_historical_price_data(self, symbol: str, periods: int = 5) -> List[Dict[str, float]]:
         """Get historical price data (open, close) for the last N 15-minute periods."""
         cache_key = f"{symbol}_price_15m_{periods}"
@@ -274,10 +324,30 @@ class BinanceVolumeSpikeDetector:
         
         return ema_results
     
+    def calculate_price_emas(self, prices: List[float], ema_periods: List[int] = [9, 21, 50]) -> Dict[str, float]:
+        """Calculate price EMAs for the given periods."""
+        if not prices or len(prices) < max(ema_periods):
+            # Return NaN for all requested EMAs if insufficient data
+            return {f'price_ema_{period}': np.nan for period in ema_periods}
+        
+        # Convert to numpy array for talib
+        price_array = np.array(prices, dtype=float)
+        
+        # Calculate EMAs for all requested periods
+        ema_results = {}
+        for period in ema_periods:
+            if len(prices) >= period:
+                ema_values = talib.EMA(price_array, timeperiod=period)
+                ema_results[f'price_ema_{period}'] = ema_values[-1] if not np.isnan(ema_values[-1]) else np.nan
+            else:
+                ema_results[f'price_ema_{period}'] = np.nan
+        
+        return ema_results
+    
     def detect_volume_spikes(self, df: pd.DataFrame, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
         """Detect volume spikes by comparing last candle to previous N-1 candles."""
         print(f"🔍 Detecting volume spikes using {periods} periods of data")
-        print(f"📊 Comparing last candle to previous {spike_periods-1} candles")
+        print(f"📊 Comparing last candle to previous {spike_periods} candles")
         print(f"🎯 Threshold: {threshold_pct}%")
         print(f"🚀 Using {self.max_workers} parallel workers")
         print(f"📈 Calculating volume EMAs for periods: {ema_periods}")
@@ -291,10 +361,11 @@ class BinanceVolumeSpikeDetector:
                 ema_values = [np.nan] * len(ema_periods)
                 return (symbol, np.nan, np.nan, np.nan, np.nan, np.nan) + tuple(ema_values)
             
-            last_volume = vols[-1]  # Most recent candle
+            last_volume = vols[-1]  # Most recent candle (N)
             # Use spike_periods to determine how many previous candles to compare against
-            if len(vols) >= spike_periods:
-                prev_volumes = vols[-spike_periods:-1]  # Previous spike_periods-1 candles
+            # We want to compare N to N-1, N-2, N-3, etc.
+            if len(vols) >= spike_periods + 1:  # Need at least spike_periods + 1 candles
+                prev_volumes = vols[-(spike_periods + 1):-1]  # Candles N-1, N-2, N-3, etc.
             else:
                 prev_volumes = vols[:-1]  # All previous candles if not enough data
             avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else np.nan
@@ -313,43 +384,65 @@ class BinanceVolumeSpikeDetector:
             last_close = price_data[-1]['close']
             is_bullish = last_close > last_open
             
-            # Get EMA values in order
-            ema_values = [volume_emas.get(f'ema_{period}', np.nan) for period in ema_periods]
+            # Extract close prices for price EMA calculation
+            close_prices = [p['close'] for p in price_data]
+            price_emas = self.calculate_price_emas(close_prices, ema_periods)
+            
+            # Get EMA values in order (volume + price)
+            volume_ema_values = [volume_emas.get(f'ema_{period}', np.nan) for period in ema_periods]
+            price_ema_values = [price_emas.get(f'price_ema_{period}', np.nan) for period in ema_periods]
+            ema_values = volume_ema_values + price_ema_values
+            
+            # Calculate VEMA multiplier (using the longest EMA period available)
+            longest_ema_period = max(ema_periods) if ema_periods else 50
+            longest_ema_key = f'ema_{longest_ema_period}'
+            longest_ema_value = volume_emas.get(longest_ema_key, np.nan)
+            vema_multiplier = (last_volume / longest_ema_value) if longest_ema_value and longest_ema_value > 0 else np.nan
             
             if avg_prev_volume and avg_prev_volume > 0:
                 spike_pct = ((last_volume - avg_prev_volume) / avg_prev_volume) * 100
-                return (symbol, round(spike_pct, 1), last_volume, avg_prev_volume, len(prev_volumes), is_bullish) + tuple(ema_values)
+                return (symbol, round(spike_pct, 1), last_volume, avg_prev_volume, len(prev_volumes), is_bullish, vema_multiplier) + tuple(ema_values)
             else:
-                return (symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), is_bullish) + tuple(ema_values)
+                return (symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), is_bullish, vema_multiplier) + tuple(ema_values)
         
         spike_results = {}
         last_volume_results = {}
         avg_volume_results = {}
         periods_used_results = {}
         bullish_results = {}
-        ema_results = {period: {} for period in ema_periods}
+        vema_multiplier_results = {}
+        volume_ema_results = {period: {} for period in ema_periods}
+        price_ema_results = {period: {} for period in ema_periods}
         completed = 0
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
             futures = {ex.submit(calc, s): s for s in symbols}
             for f in as_completed(futures):
                 result = f.result()
+                if result is None or len(result) < 7 + 2 * len(ema_periods):
+                    continue  # Skip failed results
+                    
                 sym = result[0]
                 spike_pct = result[1]
                 last_vol = result[2]
                 avg_vol = result[3]
                 periods_used = result[4]
                 is_bullish = result[5]
+                vema_multiplier = result[6]
                 
                 spike_results[sym] = spike_pct
                 last_volume_results[sym] = last_vol
                 avg_volume_results[sym] = avg_vol
                 periods_used_results[sym] = periods_used
                 bullish_results[sym] = is_bullish
+                vema_multiplier_results[sym] = vema_multiplier
                 
-                # Store EMA results
+                # Store EMA results (volume + price)
                 for i, period in enumerate(ema_periods):
-                    ema_results[period][sym] = result[6 + i]
+                    if 7 + i < len(result):
+                        volume_ema_results[period][sym] = result[7 + i]
+                    if 7 + len(ema_periods) + i < len(result):
+                        price_ema_results[period][sym] = result[7 + len(ema_periods) + i]
                 
                 completed += 1
                 if completed % 20 == 0 or completed == len(symbols):
@@ -360,15 +453,22 @@ class BinanceVolumeSpikeDetector:
         df["avg_prev_volume"] = [avg_volume_results.get(s, np.nan) for s in symbols]
         df["periods_used"] = [periods_used_results.get(s, np.nan) for s in symbols]
         df["is_bullish"] = [bullish_results.get(s, np.nan) for s in symbols]
+        df["vema_multiplier"] = [vema_multiplier_results.get(s, np.nan) for s in symbols]
         
-        # Add EMA columns dynamically
+        # Add volume EMA columns dynamically
         for period in ema_periods:
-            df[f"volume_ema_{period}"] = [ema_results[period].get(s, np.nan) for s in symbols]
+            df[f"volume_ema_{period}"] = [volume_ema_results[period].get(s, np.nan) for s in symbols]
+        
+        # Add price EMA columns dynamically
+        for period in ema_periods:
+            df[f"price_ema_{period}"] = [price_ema_results[period].get(s, np.nan) for s in symbols]
         
         return df
     
     def get_volume_spikes(self, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, 
-                         min_volume_usdt: float = 100000, limit: int = 50, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
+                         min_volume_usdt: float = 100000, limit: int = 50, ema_periods: List[int] = [9, 21, 50],
+                         filters: List[Dict[str, Any]] = None, sort_by: str = 'volume_spike_pct', 
+                         sort_ascending: bool = False) -> pd.DataFrame:
         """
         Get trading pairs with volume spikes above threshold.
         
@@ -379,9 +479,14 @@ class BinanceVolumeSpikeDetector:
             min_volume_usdt: Minimum 24h volume in USDT to filter by
             limit: Maximum number of results to return
             ema_periods: List of EMA periods to calculate
+            filters: List of filter dictionaries with format:
+                    [{'column': 'column_name', 'operator': '>=', 'value': 100}]
+                    Supported operators: '==', '!=', '>=', '<=', '>', '<'
+            sort_by: Column name to sort by (default: 'volume_spike_pct')
+            sort_ascending: Sort in ascending order if True, descending if False (default: False)
             
         Returns:
-            DataFrame sorted by volume spike percentage (descending)
+            DataFrame sorted by specified column
         """
         print("🚀 Fetching all trading pairs from Binance...")
         
@@ -421,16 +526,54 @@ class BinanceVolumeSpikeDetector:
         df_liquid = df_spikes[df_spikes['avg_prev_volume'] >= min_avg_volume].copy()
         print(f"💧 Filtered to {len(df_liquid)} pairs with avg volume >= ${min_avg_volume:,.0f}")
         
-        # Sort by spike percentage
-        df_sorted = df_liquid.sort_values('volume_spike_pct', ascending=False)
-        print("📊 Sorted by volume spike percentage (highest spikes first)")
+        # Apply custom filters if provided
+        if filters:
+            df_filtered = df_liquid.copy()
+            for filter_rule in filters:
+                column = filter_rule.get('column')
+                operator = filter_rule.get('operator')
+                value = filter_rule.get('value')
+                
+                if column and operator and column in df_filtered.columns:
+                    if operator == '==':
+                        df_filtered = df_filtered[df_filtered[column] == value]
+                    elif operator == '!=':
+                        df_filtered = df_filtered[df_filtered[column] != value]
+                    elif operator == '>=':
+                        df_filtered = df_filtered[df_filtered[column] >= value]
+                    elif operator == '<=':
+                        df_filtered = df_filtered[df_filtered[column] <= value]
+                    elif operator == '>':
+                        df_filtered = df_filtered[df_filtered[column] > value]
+                    elif operator == '<':
+                        df_filtered = df_filtered[df_filtered[column] < value]
+                    elif operator == 'endswith':
+                        df_filtered = df_filtered[df_filtered[column].astype(str).str.endswith(str(value))]
+                    elif operator == 'startswith':
+                        df_filtered = df_filtered[df_filtered[column].astype(str).str.startswith(str(value))]
+                    elif operator == 'contains':
+                        df_filtered = df_filtered[df_filtered[column].astype(str).str.contains(str(value), case=False)]
+                    
+                    print(f"🔍 Applied filter: {column} {operator} {value} -> {len(df_filtered)} pairs remaining")
+                else:
+                    print(f"⚠️  Invalid filter rule: {filter_rule}")
+            
+            df_liquid = df_filtered
+        
+        # Sort by specified column
+        if sort_by in df_liquid.columns:
+            df_sorted = df_liquid.sort_values(sort_by, ascending=sort_ascending)
+            print(f"📊 Sorted by {sort_by} ({'ascending' if sort_ascending else 'descending'})")
+        else:
+            print(f"⚠️  Sort column '{sort_by}' not found, using default sort by volume_spike_pct")
+            df_sorted = df_liquid.sort_values('volume_spike_pct', ascending=False)
         
         # Select top N
         top_spikes = df_sorted.head(limit)
         
         return top_spikes
     
-    def get_volume_spikes_single_symbol(self, symbol: str, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, ema_periods: List[int] = [9, 21, 50]) -> pd.DataFrame:
+    def get_volume_spikes_single_symbol(self, symbol: str, periods: int = 50, spike_periods: int = 5, threshold_pct: float = 100.0, ema_periods: List[int] = [9, 21, 50], sort_by: str = 'volume_spike_pct', sort_ascending: bool = False) -> pd.DataFrame:
         """
         Get volume spike analysis for a single symbol.
         
@@ -525,6 +668,12 @@ class BinanceVolumeSpikeDetector:
             lambda x: f"🔥 +{x:.0f}%" if pd.notna(x) and x > 0 else f"📉 {x:.0f}%" if pd.notna(x) else "N/A"
         )
         
+        # Format VEMA multiplier
+        if 'vema_multiplier' in display_df.columns:
+            display_df['vema_multiplier'] = display_df['vema_multiplier'].apply(
+                lambda x: f"×{x:.1f}" if pd.notna(x) else "N/A"
+            )
+        
         # Format bullish/bearish column
         display_df['is_bullish'] = display_df['is_bullish'].apply(
             lambda x: "🟢 Bullish" if x == True else "🔴 Bearish" if x == False else "❓ Unknown"
@@ -560,29 +709,43 @@ class BinanceVolumeSpikeDetector:
                     lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
                 )
         
+        # Format price EMA columns dynamically
+        for period in ema_periods:
+            ema_col = f'price_ema_{period}'
+            if ema_col in display_df.columns:
+                display_df[ema_col] = display_df[ema_col].apply(
+                    lambda x: f"${x:.4f}" if pd.notna(x) else "N/A"
+                )
+        
         # Select and order columns dynamically
         base_columns = ['symbol', 'price_change_percent', 'last_price', 'quote_volume', 
-                       'volume_spike_pct', 'last_volume', 'avg_prev_volume']
+                       'volume_spike_pct', 'last_volume', 'avg_prev_volume', 'vema_multiplier']
         
-        # Add EMA columns dynamically
-        ema_columns = [f'volume_ema_{period}' for period in ema_periods]
+        # Add volume EMA columns dynamically
+        volume_ema_columns = [f'volume_ema_{period}' for period in ema_periods]
+        
+        # Add price EMA columns dynamically
+        price_ema_columns = [f'price_ema_{period}' for period in ema_periods]
         
         remaining_columns = ['is_bullish', 'trading_venue', 'high_24h', 'low_24h']
-        columns_to_show = base_columns + ema_columns + remaining_columns
+        columns_to_show = base_columns + volume_ema_columns + price_ema_columns + remaining_columns
         
         # Filter to only include columns that exist
         columns_to_show = [col for col in columns_to_show if col in display_df.columns]
         display_df = display_df[columns_to_show]
         
         # Create column headers dynamically
-        base_headers = ['Symbol', '24h Change %', 'Last Price', '24h Volume', 
-                       'Volume Spike %', 'Last 15m Vol', 'Avg Prev Vol']
+        base_headers = ['Symbol', '24h %', 'Price', '24h Vol', 
+                       'Spike %', '15m Vol', 'Avg Vol', f'V{max(ema_periods)}×']
         
-        # Add EMA headers dynamically
-        ema_headers = [f'Vol EMA{period}' for period in ema_periods]
+        # Add volume EMA headers dynamically
+        volume_ema_headers = [f'V{period}' for period in ema_periods]
         
-        remaining_headers = ['Candle', 'Trading Venue', '24h High', '24h Low']
-        column_headers = base_headers + ema_headers + remaining_headers
+        # Add price EMA headers dynamically
+        price_ema_headers = [f'P{period}' for period in ema_periods]
+        
+        remaining_headers = ['Candle', 'Venue', 'High', 'Low']
+        column_headers = base_headers + volume_ema_headers + price_ema_headers + remaining_headers
         
         # Filter headers to match the actual columns
         column_headers = column_headers[:len(columns_to_show)]
@@ -614,10 +777,17 @@ class BinanceVolumeSpikeDetector:
         if not ticker_data:
             return {'error': f'Symbol {symbol} not found in ticker data'}
         
-        # Get historical volumes
-        volumes = self.get_historical_quote_volumes(symbol, periods=5)
-        if not volumes:
+        # Get historical volumes with timestamps
+        volume_data = self.get_historical_quote_volumes_with_timestamps(symbol, periods=5)
+        if not volume_data:
             return {'error': f'Could not fetch historical data for {symbol}'}
+        
+        # Get price data with timestamps
+        price_data = self.get_historical_price_data(symbol, periods=5)
+        
+        # Extract volumes and timestamps
+        volumes = [v['volume'] for v in volume_data]
+        timestamps = [v['datetime'] for v in volume_data]
         
         # Calculate spike
         last_volume = volumes[-1]
@@ -625,13 +795,28 @@ class BinanceVolumeSpikeDetector:
         avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else 0
         spike_pct = ((last_volume - avg_prev_volume) / avg_prev_volume * 100) if avg_prev_volume > 0 else 0
         
+        # Get current server time
+        try:
+            server_time_response = self.session.get('https://api.binance.com/api/v3/time')
+            server_time = server_time_response.json()['serverTime']
+            server_time_str = datetime.fromtimestamp(server_time / 1000).strftime('%Y-%m-%d %H:%M:%S UTC')
+        except:
+            server_time_str = "Could not fetch"
+        
         return {
             'symbol': symbol,
             'ticker_24h_volume': float(ticker_data['quoteVolume']),
             'last_15m_volume': last_volume,
             'avg_prev_4_volumes': avg_prev_volume,
             'volume_spike_pct': round(spike_pct, 1),
-            'volumes': volumes
+            'volumes': volumes,
+            'timestamps': timestamps,
+            'volume_data_with_timestamps': volume_data,
+            'price_data': price_data,
+            'server_time': server_time_str,
+            'last_volume_formatted': f"${last_volume:,.0f}",
+            'avg_prev_formatted': f"${avg_prev_volume:,.0f}",
+            'last_candle_time': timestamps[-1] if timestamps else "Unknown"
         }
     
     def check_symbol_status(self, symbol: str) -> Dict[str, Any]:
@@ -672,10 +857,92 @@ def main():
     
     # Default parameters
     periods = 50  # Need at least 50 periods for EMA 50 calculation
-    spike_periods = 5  # Compare last candle to previous 4 candles
+    spike_periods = 1  # Compare last candle to previous 4 candles
     threshold_pct = 100.0
-    max_workers = 10
+    max_workers = 10  # Reduced to avoid API rate limits
     ema_periods = [9, 21, 50]  # Default EMA periods
+    sort_by = 'volume_spike_pct'  # Default sort column
+    sort_ascending = False  # Default sort order (descending)
+    
+    # ============================================================================
+    # DEFAULT FILTERS - Define your filters here
+    # ============================================================================
+    # Example filters (uncomment and modify as needed):
+    # filters = [
+    #     {'column': 'vema_multiplier', 'operator': '>=', 'value': 2.0},
+    #     {'column': 'volume_spike_pct', 'operator': '>=', 'value': 200.0},
+    #     {'column': 'is_bullish', 'operator': '==', 'value': True},
+    #     {'column': 'quote_volume', 'operator': '>=', 'value': 1000000},  # $1M+ 24h volume
+    # ]
+    
+    # Available columns for filtering:
+    # - vema_multiplier: VEMA multiplier (float)
+    # - volume_spike_pct: Volume spike percentage (float)
+    # - last_volume: Last 15m volume (float)
+    # - avg_prev_volume: Average previous volume (float)
+    # - quote_volume: 24h volume (float)
+    # - price_change_percent: 24h price change (float)
+    # - last_price: Current price (float)
+    # - is_bullish: Bullish/bearish candle (bool)
+    # - symbol: Trading pair symbol (string)
+    
+    # Available operators: '==', '!=', '>=', '<=', '>', '<', 'endswith', 'startswith', 'contains'
+    
+    # ============================================================================
+    # DEFAULT SORTING - Define your sorting preferences here
+    # ============================================================================
+    # Available columns for sorting:
+    # - volume_spike_pct: Volume spike percentage (default)
+    # - vema_multiplier: VEMA multiplier
+    # - last_volume: Last 15m volume
+    # - avg_prev_volume: Average previous volume
+    # - quote_volume: 24h volume
+    # - price_change_percent: 24h price change
+    # - last_price: Current price
+    # - symbol: Trading pair symbol
+    
+    # Script-level sorting (uncomment and modify as needed):
+    sort_by = 'vema_multiplier'  # Sort by VEMA multiplier
+    sort_ascending = False       # False = descending (highest first), True = ascending (lowest first)
+    
+    # Example: Enable these filters by uncommenting the line below
+    # filters = [
+    #     {'column': 'vema_multiplier', 'operator': '>=', 'value': 2.0},
+    #     {'column': 'volume_spike_pct', 'operator': '>=', 'value': 200.0},
+    # ]
+    
+    # 🔥 ENABLE FILTERS HERE - Uncomment and modify the filters below:
+    
+    # Example 1: High volume spikes with strong VEMA multiplier
+    filters = [
+        {'column': 'vema_multiplier', 'operator': '>=', 'value': 2.0},
+        {'column': 'volume_spike_pct', 'operator': '>=', 'value': 200.0},
+        {'column': 'is_bullish', 'operator': '==', 'value': True},
+    ]
+    
+    # Example 2: Only bullish candles with high volume
+    # filters = [
+    #     {'column': 'is_bullish', 'operator': '==', 'value': True},
+    #     {'column': 'volume_spike_pct', 'operator': '>=', 'value': 100.0},
+    #     {'column': 'quote_volume', 'operator': '>=', 'value': 1000000},  # $1M+ 24h volume
+    # ]
+    
+    filters = filters  # Disable filters temporarily due to API rate limits
+    
+    # Example 3: High liquidity pairs with moderate spikes
+    # filters = [
+    #     {'column': 'quote_volume', 'operator': '>=', 'value': 5000000},  # $5M+ 24h volume
+    #     {'column': 'volume_spike_pct', 'operator': '>=', 'value': 50.0},
+    #     {'column': 'vema_multiplier', 'operator': '>=', 'value': 1.5},
+    # ]
+    
+    # Example 4: Only USDT pairs with high spikes
+    # filters = [
+    #     {'column': 'symbol', 'operator': 'endswith', 'value': 'USDT'},
+    #     {'column': 'volume_spike_pct', 'operator': '>=', 'value': 300.0},
+    # ]
+    
+    # filters = None  # Set to None to disable default filters
     
     # Parse arguments
     single_symbol = None
@@ -691,6 +958,41 @@ def main():
             try:
                 ema_str = arg.split(':')[1]
                 ema_periods = [int(x.strip()) for x in ema_str.split(',')]
+            except (ValueError, IndexError):
+                pass
+        elif arg.startswith('filter:'):
+            try:
+                filter_str = arg.split(':', 1)[1]  # Split only on first colon
+                # Format: filter:column:operator:value
+                parts = filter_str.split(':')
+                if len(parts) >= 3:
+                    column = parts[0]
+                    operator = parts[1]
+                    value_str = ':'.join(parts[2:])  # Handle values that might contain colons
+                    
+                    # Try to convert value to appropriate type
+                    try:
+                        if '.' in value_str:
+                            value = float(value_str)
+                        else:
+                            value = int(value_str)
+                    except ValueError:
+                        value = value_str  # Keep as string if conversion fails
+                    
+                    if filters is None:
+                        filters = []
+                    filters.append({'column': column, 'operator': operator, 'value': value})
+            except (ValueError, IndexError):
+                pass
+        elif arg.startswith('sort:'):
+            try:
+                sort_str = arg.split(':', 1)[1]  # Split only on first colon
+                # Format: sort:column:asc or sort:column:desc
+                parts = sort_str.split(':')
+                if len(parts) >= 2:
+                    sort_by = parts[0]
+                    sort_order = parts[1].lower() if len(parts) > 1 else 'desc'
+                    sort_ascending = sort_order in ['asc', 'ascending', 'true', '1']
             except (ValueError, IndexError):
                 pass
         elif arg.startswith('debug:'):
@@ -726,6 +1028,15 @@ def main():
     
     print(f"📊 Parameters: {periods} data periods, {spike_periods} spike periods, {threshold_pct}% threshold, {max_workers} workers")
     print(f"📈 EMA periods: {ema_periods}")
+    print(f"📊 Sorting: {sort_by} ({'ascending' if sort_ascending else 'descending'})")
+    
+    # Show active filters
+    if filters:
+        print(f"🔍 Active filters: {len(filters)} filter(s)")
+        for i, filter_rule in enumerate(filters, 1):
+            print(f"   {i}. {filter_rule['column']} {filter_rule['operator']} {filter_rule['value']}")
+    else:
+        print("🔍 No filters applied")
     
     # Create detector and get results
     detector = BinanceVolumeSpikeDetector(max_workers=max_workers)
@@ -737,7 +1048,9 @@ def main():
             periods=periods,
             spike_periods=spike_periods,
             threshold_pct=threshold_pct,
-            ema_periods=ema_periods
+            ema_periods=ema_periods,
+            sort_by=sort_by,
+            sort_ascending=sort_ascending
         )
         title = f"🔥 Volume Spike Analysis for {single_symbol} (Last {periods} periods, spike: {spike_periods}, >= {threshold_pct}% threshold)"
     else:
@@ -747,7 +1060,10 @@ def main():
             threshold_pct=threshold_pct,
             min_volume_usdt=100000,
             limit=50,
-            ema_periods=ema_periods
+            ema_periods=ema_periods,
+            filters=filters,
+            sort_by=sort_by,
+            sort_ascending=sort_ascending
         )
         title = f"🔥 Top Volume Spikes (Last {periods} periods, spike: {spike_periods}, >= {threshold_pct}% threshold)"
     
