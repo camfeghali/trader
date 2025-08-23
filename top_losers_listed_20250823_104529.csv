@@ -1,0 +1,2 @@
+symbol,price_change,price_change_percent,weighted_avg_price,prev_close_price,last_price,volume,quote_volume,high_24h,low_24h,count,trading_venue,rvol
+BBUSDC,0.0252,18.694,0.16202326,0.1349,0.16,23309128.9,3776621.08423,0.18,0.1314,21622,Spot Only,1.01

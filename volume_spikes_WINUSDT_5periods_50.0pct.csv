@@ -1,0 +1,2 @@
+symbol,price_change_percent,last_price,quote_volume,count,trading_venue,high_24h,low_24h,volume_spike_pct,last_volume,avg_prev_volume,periods_used
+WINUSDT,5.197,6.417e-05,685855.87245221,19378,Spot Only,6.442e-05,5.966e-05,-86.2,1978.80211514,14346.1372036,4

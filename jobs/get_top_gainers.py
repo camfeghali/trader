@@ -1,168 +1,74 @@
 #!/usr/bin/env python3
 """
-Script to fetch all trading pairs from Binance and sort them by 24-hour price change.
-This helps identify the best performing cryptocurrencies in the last 24 hours.
+Binance Volume Spike Detector
 
-Features:
-- Parallel processing for RVOL calculations (configurable workers)
-- Support for all major stablecoins and BNB pairs
-- Caching for historical volume data
-- Thread-safe operations
-- Rate limit respecting API calls
+This script fetches all tradeable stablecoin pairs from Binance and detects volume spikes
+by comparing the last 15-minute candle's volume to the average of the previous 4 candles.
 
 Usage:
-    python get_top_gainers.py                    # Default: 10 workers
-    python get_top_gainers.py workers:20        # Use 20 parallel workers
-    python get_top_gainers.py BTCUSDT           # Search specific symbol
-    python get_top_gainers.py status:BTCUSDT    # Check symbol status
+    uv run jobs/get_top_gainers.py                    # Default: 5 candles, 100% threshold
+    uv run jobs/get_top_gainers.py 10 200            # 10 candles, 200% threshold
+    uv run jobs/get_top_gainers.py BTCUSDT           # Analyze single symbol
+    uv run jobs/get_top_gainers.py BTCUSDT 10 200    # Single symbol with custom params
+    uv run jobs/get_top_gainers.py symbol:BTCUSDT    # Analyze single symbol (explicit)
+    uv run jobs/get_top_gainers.py debug:SYMBOL      # Debug specific symbol
+    uv run jobs/get_top_gainers.py status:SYMBOL     # Check symbol status
 """
 
 import requests
 import pandas as pd
-from typing import List, Dict, Any
+import numpy as np
+import sys
 import time
-from datetime import datetime, timedelta
-import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from typing import List, Dict, Any, Optional, Tuple
 
-class BinanceTopGainers:
+
+class BinanceVolumeSpikeDetector:
     def __init__(self, max_workers: int = 10):
         self.base_url = "https://api.binance.com/api/v3"
-        self._volume_cache = {}  # Cache for historical volume data
-        self._cache_lock = threading.Lock()  # Thread-safe cache access
-        self.max_workers = max_workers  # Number of parallel workers for RVOL calculation
+        self._volume_cache = {}
+        self._cache_lock = threading.Lock()
+        self.max_workers = max_workers
+        # Create a session for connection reuse
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (compatible; BinanceVolumeSpikeDetector/1.0)'
+        })
         
     def get_all_tickers(self) -> List[Dict[str, Any]]:
-        """
-        Fetch 24hr ticker price change statistics for all symbols.
-        
-        Returns:
-            List of dictionaries containing ticker information
-        """
+        """Fetch all 24hr ticker data from Binance."""
         try:
-            url = f"{self.base_url}/ticker/24hr"
-            response = requests.get(url, timeout=30)
+            response = self.session.get(f"{self.base_url}/ticker/24hr", timeout=10)
             response.raise_for_status()
-            
             tickers = response.json()
             print(f"✅ Fetched {len(tickers)} trading pairs from Binance")
             return tickers
-            
         except requests.exceptions.RequestException as e:
             print(f"❌ Error fetching tickers: {e}")
             return []
     
     def get_exchange_info(self) -> Dict[str, Any]:
-        """
-        Fetch exchange information to get detailed status of all symbols.
-        
-        Returns:
-            Dictionary containing exchange information
-        """
-        try:
-            url = f"{self.base_url}/exchangeInfo"
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            
-            exchange_info = response.json()
-            print(f"✅ Fetched exchange info with {len(exchange_info.get('symbols', []))} symbols")
-            return exchange_info
-            
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching exchange info: {e}")
-            return {}
-    
-    def filter_listed_pairs(self, tickers: List[Dict[str, Any]], exchange_info: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Filter to only pairs that are currently tradeable on spot or futures.
-        
-        Args:
-            tickers: List of ticker data
-            exchange_info: Exchange information from Binance
-            
-        Returns:
-            List of tradeable pairs with trading venue information
-        """
-        if not exchange_info or 'symbols' not in exchange_info:
-            print("⚠️ No exchange info available, using basic filtering")
-            return self.filter_active_pairs(tickers)
-        
-        # Create dictionaries to store trading venue info
-        symbol_venue_info = {}
-        tradeable_symbols = set()
-        spot_only_symbols = set()
-        futures_only_symbols = set()
-        suspended_symbols = set()
-        other_status_symbols = set()
-        
-        for symbol_info in exchange_info['symbols']:
-            symbol = symbol_info['symbol']
-            status = symbol_info['status']
-            is_spot_allowed = symbol_info.get('isSpotTradingAllowed', False)
-            is_futures_allowed = symbol_info.get('isFuturesTradingAllowed', False)
-            is_suspended = symbol_info.get('isSuspended', False)
-            
-            # Check if symbol is tradeable (either spot or futures)
-            if status == 'TRADING' and not is_suspended:
-                if is_spot_allowed and is_futures_allowed:
-                    tradeable_symbols.add(symbol)
-                    symbol_venue_info[symbol] = "Spot & Futures"
-                elif is_spot_allowed:
-                    spot_only_symbols.add(symbol)
-                    symbol_venue_info[symbol] = "Spot Only"
-                elif is_futures_allowed:
-                    futures_only_symbols.add(symbol)
-                    symbol_venue_info[symbol] = "Futures Only"
-            elif status == 'SUSPENDED' or is_suspended:
-                suspended_symbols.add(symbol)
-                symbol_venue_info[symbol] = "Suspended"
-            else:
-                other_status_symbols.add(symbol)
-                symbol_venue_info[symbol] = "Other"
-        
-        # Combine all tradeable symbols
-        all_tradeable = tradeable_symbols | spot_only_symbols | futures_only_symbols
-        
-        print(f"📋 Found {len(all_tradeable)} tradeable symbols:")
-        print(f"   - {len(tradeable_symbols)} tradeable on both spot & futures")
-        print(f"   - {len(spot_only_symbols)} tradeable on spot only")
-        print(f"   - {len(futures_only_symbols)} tradeable on futures only")
-        print(f"🚫 Found {len(suspended_symbols)} suspended symbols")
-        print(f"❓ Found {len(other_status_symbols)} symbols with other status")        
-        
-        # Filter tickers to only include tradeable symbols and add venue info
-        tradeable_pairs = []
-        for ticker in tickers:
-            if ticker['symbol'] in all_tradeable:
-                ticker['trading_venue'] = symbol_venue_info.get(ticker['symbol'], "Unknown")
-                tradeable_pairs.append(ticker)
-        
-        print(f"✅ Filtered to {len(tradeable_pairs)} tradeable pairs")
-        return tradeable_pairs
+        """Fetch exchange information with retry mechanism."""
+        for attempt in range(3):
+            try:
+                response = self.session.get(f"{self.base_url}/exchangeInfo", timeout=10)
+                response.raise_for_status()
+                exchange_info = response.json()
+                print(f"✅ Fetched exchange info with {len(exchange_info.get('symbols', []))} symbols")
+                return exchange_info
+            except requests.exceptions.RequestException as e:
+                if attempt < 2:
+                    print(f"⚠️  Attempt {attempt + 1} failed, retrying...")
+                    time.sleep(1)
+                else:
+                    print(f"❌ Error fetching exchange info: {e}")
+                    return {}
     
     def filter_stablecoin_pairs(self, tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Filter to trading pairs with stablecoins and BNB as quote assets.
-        
-        Args:
-            tickers: List of all ticker data
-            
-        Returns:
-            List of stablecoin and BNB trading pairs
-        """
-        stablecoins = [
-            "USDT",   # Tether
-            "USDC",   # USD Coin
-            "FDUSD",  # First Digital USD
-            "DAI",    # Dai
-            "TUSD",   # TrueUSD
-            "USD1",   # World Liberty Financial USD
-            "XUSD",   # StraitsX USD
-            "EURI"    # Eurite (EUR-backed)
-        ]
-        
-        # Add BNB to the list
+        """Filter to stablecoin and BNB pairs only."""
+        stablecoins = ["USDC"]
         quote_assets = stablecoins + ["BNB"]
         
         stablecoin_pairs = []
@@ -172,174 +78,253 @@ class BinanceTopGainers:
                     stablecoin_pairs.append(ticker)
                     break
         
-        # Count pairs by quote asset
-        asset_counts = {}
-        for ticker in stablecoin_pairs:
-            for asset in quote_assets:
-                if ticker['symbol'].endswith(asset):
-                    asset_counts[asset] = asset_counts.get(asset, 0) + 1
-                    break
-        
-        print(f"📊 Found {len(stablecoin_pairs)} stablecoin/BNB trading pairs:")
-        for asset, count in sorted(asset_counts.items()):
-            print(f"   - {asset}: {count} pairs")
-        
+        print(f"📊 Found {len(stablecoin_pairs)} stablecoin/BNB pairs")
         return stablecoin_pairs
     
-    def filter_active_pairs(self, tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Filter to only active trading pairs (volume > 0 and status is TRADING).
+    def filter_listed_pairs(self, tickers: List[Dict[str, Any]], exchange_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Filter to listed pairs and add trading venue info."""
+        symbols_info = {s['symbol']: s for s in exchange_info.get('symbols', [])}
         
-        Args:
-            tickers: List of ticker data
-            
-        Returns:
-            List of active trading pairs only
-        """
-        active_pairs = [
-            ticker for ticker in tickers 
-            if (float(ticker['volume']) > 0 and 
-                float(ticker['quoteVolume']) > 0 and
-                ticker.get('status', 'TRADING') == 'TRADING')
-        ]
-        print(f"🔄 Found {len(active_pairs)} active trading pairs")
+        listed_pairs = []
+        for ticker in tickers:
+            symbol = ticker['symbol']
+            if symbol in symbols_info:
+                symbol_info = symbols_info[symbol]
+                status = symbol_info.get('status', 'UNKNOWN')
+                
+                if status == 'TRADING':
+                    # Determine trading venue
+                    is_spot = symbol_info.get('isSpotTradingAllowed', False)
+                    is_futures = symbol_info.get('isFuturesTradingAllowed', False)
+                    
+                    if is_spot and is_futures:
+                        trading_venue = "Spot & Futures"
+                    elif is_spot:
+                        trading_venue = "Spot Only"
+                    elif is_futures:
+                        trading_venue = "Futures Only"
+                    else:
+                        trading_venue = "Other"
+                    
+                    ticker['trading_venue'] = trading_venue
+                    listed_pairs.append(ticker)
+        
+        print(f"✅ Filtered to {len(listed_pairs)} tradeable pairs")
+        return listed_pairs
+    
+    def filter_active_pairs(self, tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Filter to active pairs when exchange info is unavailable."""
+        active_pairs = []
+        for ticker in tickers:
+            if ticker.get('status') == 'TRADING':
+                ticker['trading_venue'] = "Active (Exchange Info Unavailable)"
+                active_pairs.append(ticker)
+        
+        print(f"✅ Filtered to {len(active_pairs)} active pairs")
         return active_pairs
     
     def create_dataframe(self, tickers: List[Dict[str, Any]]) -> pd.DataFrame:
-        """
-        Convert ticker data to a pandas DataFrame for easier analysis.
-        
-        Args:
-            tickers: List of ticker data
-            
-        Returns:
-            DataFrame with ticker information including trading venue
-        """
-        # Extract relevant fields
+        """Create DataFrame from ticker data."""
         data = []
         for ticker in tickers:
             data.append({
                 'symbol': ticker['symbol'],
-                'price_change': float(ticker['priceChange']),
                 'price_change_percent': float(ticker['priceChangePercent']),
-                'weighted_avg_price': float(ticker['weightedAvgPrice']),
-                'prev_close_price': float(ticker['prevClosePrice']),
                 'last_price': float(ticker['lastPrice']),
-                'volume': float(ticker['volume']),
                 'quote_volume': float(ticker['quoteVolume']),
-                'high_24h': float(ticker['highPrice']),
-                'low_24h': float(ticker['lowPrice']),
                 'count': int(ticker['count']),
-                'trading_venue': ticker.get('trading_venue', 'Unknown')
+                'trading_venue': ticker.get('trading_venue', 'Unknown'),
+                'high_24h': float(ticker['highPrice']),
+                'low_24h': float(ticker['lowPrice'])
             })
         
-        df = pd.DataFrame(data)
-        return df
+        return pd.DataFrame(data)
     
-    def get_historical_quote_volumes(self, symbol: str, days: int = 20) -> List[float]:
-        """
-        Return the last `days` *closed* daily candles' quote-asset volumes (Binance kline[7]).
-        Uses caching to avoid redundant API calls. Thread-safe.
-        """
-        # Check cache first (thread-safe)
-        cache_key = f"{symbol}_{days}"
+    def _get_server_time_ms(self) -> int:
+        """Get Binance server time in milliseconds."""
+        try:
+            response = self.session.get(f"{self.base_url}/time", timeout=5)
+            response.raise_for_status()
+            return response.json()['serverTime']
+        except:
+            # Fallback to local time
+            return int(time.time() * 1000)
+    
+    def get_historical_quote_volumes(self, symbol: str, periods: int = 5) -> List[float]:
+        """Get historical quote volumes for the last N 15-minute periods."""
+        cache_key = f"{symbol}_15m_{periods}"
+        
         with self._cache_lock:
             if cache_key in self._volume_cache:
                 return self._volume_cache[cache_key]
         
-        try:
-            now_ms = int(time.time() * 1000)
-            day_ms = 24 * 60 * 60 * 1000
-            # end at today's 00:00:00 UTC to exclude today's still-open candle
-            today_open_ms = (now_ms // day_ms) * day_ms
-
-            url = f"{self.base_url}/klines"
-            params = {
-                "symbol": symbol,
-                "interval": "1d",
-                "endTime": today_open_ms,   # exclude today's candle
-                "limit": days               # get exactly the last `days` closed candles
-            }
-            resp = requests.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-            klines = resp.json()
-
-            # kline[7] = quote asset volume
-            volumes = [float(k[7]) for k in klines]
-            
-            # Cache the result (thread-safe)
-            with self._cache_lock:
-                self._volume_cache[cache_key] = volumes
-            return volumes
-            
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching historical data for {symbol}: {e}")
-            return []
-
-    def calculate_rvol(self, df: pd.DataFrame, days: int = 20) -> pd.DataFrame:
-        """
-        RVOL = today's *daily-candle* quote volume / avg(quote volume of last `days` closed candles)
-        NOTE: Requires `df` to contain today's *daily candle* quote volume, not rolling 24h.
-        Uses parallel processing for faster execution.
-        """
-        import numpy as np
-
-        print(f"📊 Calculating RVOL for {len(df)} pairs using {days}-day average (daily candles)...")
+        # Retry logic for network requests
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Calculate time range for closed candles
+                server_now_ms = self._get_server_time_ms()
+                period_ms = 15 * 60 * 1000  # 15 minutes in milliseconds
+                current_open = (server_now_ms // period_ms) * period_ms
+                end_time = current_open - 1
+                start_time = end_time - (periods * period_ms) + 1
+                
+                params = {
+                    "symbol": symbol,
+                    "interval": "15m",
+                    "startTime": start_time,
+                    "endTime": end_time,
+                    "limit": periods
+                }
+                
+                response = self.session.get(f"{self.base_url}/klines", params=params, timeout=15)
+                response.raise_for_status()
+                klines = response.json()
+                
+                if not isinstance(klines, list) or len(klines) != periods:
+                    return []
+                
+                volumes = [float(k[7]) for k in klines]  # Quote volume is at index 7
+                
+                with self._cache_lock:
+                    self._volume_cache[cache_key] = volumes
+                
+                return volumes
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                else:
+                    # Only print error on final attempt to reduce noise
+                    print(f"❌ Error fetching historical data for {symbol} after {max_retries} attempts: {e}")
+                    return []
+    
+    def get_historical_price_data(self, symbol: str, periods: int = 5) -> List[Dict[str, float]]:
+        """Get historical price data (open, close) for the last N 15-minute periods."""
+        cache_key = f"{symbol}_price_15m_{periods}"
+        
+        with self._cache_lock:
+            if cache_key in self._volume_cache:
+                return self._volume_cache[cache_key]
+        
+        # Retry logic for network requests
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Calculate time range for closed candles
+                server_now_ms = self._get_server_time_ms()
+                period_ms = 15 * 60 * 1000  # 15 minutes in milliseconds
+                current_open = (server_now_ms // period_ms) * period_ms
+                end_time = current_open - 1
+                start_time = end_time - (periods * period_ms) + 1
+                
+                params = {
+                    "symbol": symbol,
+                    "interval": "15m",
+                    "startTime": start_time,
+                    "endTime": end_time,
+                    "limit": periods
+                }
+                
+                response = self.session.get(f"{self.base_url}/klines", params=params, timeout=15)
+                response.raise_for_status()
+                klines = response.json()
+                
+                if not isinstance(klines, list) or len(klines) != periods:
+                    return []
+                
+                price_data = []
+                for k in klines:
+                    price_data.append({
+                        'open': float(k[1]),   # Open price
+                        'close': float(k[4])   # Close price
+                    })
+                
+                with self._cache_lock:
+                    self._volume_cache[cache_key] = price_data
+                
+                return price_data
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                else:
+                    return []
+    
+    def detect_volume_spikes(self, df: pd.DataFrame, periods: int = 5, threshold_pct: float = 100.0) -> pd.DataFrame:
+        """Detect volume spikes by comparing last candle to previous N-1 candles."""
+        print(f"🔍 Detecting volume spikes using {periods} periods with {threshold_pct}% threshold")
         print(f"🚀 Using {self.max_workers} parallel workers")
         
-        # Prepare data for parallel processing
         symbols = df['symbol'].tolist()
-        current_volumes = df['quote_volume'].tolist()
         
-        # Function to calculate RVOL for a single symbol
-        def calculate_single_rvol(symbol: str, current_volume: float) -> tuple:
-            vols = self.get_historical_quote_volumes(symbol, days)
-            if vols and len(vols) > 0:
-                avg_qv = sum(vols) / len(vols)
-                rvol = (current_volume / avg_qv) if avg_qv > 0 else np.nan
-                return symbol, round(rvol, 2)
+        def calc(symbol: str) -> tuple:
+            vols = self.get_historical_quote_volumes(symbol, periods)
+            if len(vols) != periods:
+                return symbol, np.nan, np.nan, np.nan, np.nan, np.nan
+            
+            last_volume = vols[-1]  # Most recent candle
+            prev_volumes = vols[:-1]  # Previous N-1 candles
+            avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else np.nan
+            
+            # Get price data for the last candle
+            price_data = self.get_historical_price_data(symbol, periods)
+            if len(price_data) != periods:
+                return symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), np.nan
+            
+            last_open = price_data[-1]['open']
+            last_close = price_data[-1]['close']
+            is_bullish = last_close > last_open
+            
+            if avg_prev_volume and avg_prev_volume > 0:
+                spike_pct = ((last_volume - avg_prev_volume) / avg_prev_volume) * 100
+                return symbol, round(spike_pct, 1), last_volume, avg_prev_volume, len(prev_volumes), is_bullish
             else:
-                return symbol, np.nan
+                return symbol, np.nan, last_volume, avg_prev_volume, len(prev_volumes), is_bullish
         
-        # Process in parallel
-        rvol_results = {}
+        spike_results = {}
+        last_volume_results = {}
+        avg_volume_results = {}
+        periods_used_results = {}
+        bullish_results = {}
         completed = 0
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
-            future_to_symbol = {
-                executor.submit(calculate_single_rvol, symbol, current_volume): symbol 
-                for symbol, current_volume in zip(symbols, current_volumes)
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_symbol):
-                symbol, rvol = future.result()
-                rvol_results[symbol] = rvol
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            futures = {ex.submit(calc, s): s for s in symbols}
+            for f in as_completed(futures):
+                sym, spike_pct, last_vol, avg_vol, periods_used, is_bullish = f.result()
+                spike_results[sym] = spike_pct
+                last_volume_results[sym] = last_vol
+                avg_volume_results[sym] = avg_vol
+                periods_used_results[sym] = periods_used
+                bullish_results[sym] = is_bullish
                 completed += 1
-                
-                # Progress indicator
-                if completed % 10 == 0 or completed == len(symbols):
-                    print(f"   Progress: {completed}/{len(symbols)} pairs processed")
+                if completed % 20 == 0 or completed == len(symbols):
+                    print(f"   Progress: {completed}/{len(symbols)}")
         
-        # Add RVOL values to DataFrame in correct order
-        df["rvol"] = [rvol_results.get(symbol, np.nan) for symbol in symbols]
+        df["volume_spike_pct"] = [spike_results.get(s, np.nan) for s in symbols]
+        df["last_volume"] = [last_volume_results.get(s, np.nan) for s in symbols]
+        df["avg_prev_volume"] = [avg_volume_results.get(s, np.nan) for s in symbols]
+        df["periods_used"] = [periods_used_results.get(s, np.nan) for s in symbols]
+        df["is_bullish"] = [bullish_results.get(s, np.nan) for s in symbols]
+        
         return df
-
     
-    def get_top_gainers(self, limit: int = 20, min_volume_usdt: float = 100000, use_exchange_info: bool = True, sort_by_rvol: bool = False, rvol_days: int = 20) -> pd.DataFrame:
+    def get_volume_spikes(self, periods: int = 5, threshold_pct: float = 100.0, 
+                         min_volume_usdt: float = 100000, limit: int = 50) -> pd.DataFrame:
         """
-        Get the top gaining trading pairs in the last 24 hours.
+        Get trading pairs with volume spikes above threshold.
         
         Args:
-            limit: Number of top gainers to return
+            periods: Number of 15-minute periods to analyze (default: 5)
+            threshold_pct: Minimum spike percentage to include (default: 100%)
             min_volume_usdt: Minimum 24h volume in USDT to filter by
-            use_exchange_info: Whether to use exchange info for better filtering
-            sort_by_rvol: Whether to sort by RVOL instead of price change
-            rvol_days: Number of days to use for RVOL calculation (default: 20)
+            limit: Maximum number of results to return
             
         Returns:
-            DataFrame sorted by price change percentage (descending) or RVOL (descending)
+            DataFrame sorted by volume spike percentage (descending)
         """
         print("🚀 Fetching all trading pairs from Binance...")
         
@@ -349,9 +334,7 @@ class BinanceTopGainers:
             return pd.DataFrame()
         
         # Get exchange info for better filtering
-        exchange_info = {}
-        if use_exchange_info:
-            exchange_info = self.get_exchange_info()
+        exchange_info = self.get_exchange_info()
         
         # Filter to stablecoin/BNB pairs only
         stablecoin_pairs = self.filter_stablecoin_pairs(all_tickers)
@@ -369,409 +352,313 @@ class BinanceTopGainers:
         df = df[df['quote_volume'] >= min_volume_usdt]
         print(f"📈 Filtered to {len(df)} pairs with volume >= ${min_volume_usdt:,.0f}")
         
-        # Calculate RVOL
-        df = self.calculate_rvol(df, days=rvol_days)
+        # Detect volume spikes
+        df = self.detect_volume_spikes(df, periods=periods, threshold_pct=threshold_pct)
         
-        # Sort by price change percentage or RVOL
-        if sort_by_rvol:
-            df_sorted = df.sort_values('rvol', ascending=False)
-            print("📊 Sorted by RVOL (highest relative volume first)")
-        else:
-            df_sorted = df.sort_values('price_change_percent', ascending=False)
-            print("📈 Sorted by price change percentage (highest gainers first)")
+        # Filter for positive spikes above threshold only
+        df_spikes = df[(df['volume_spike_pct'] >= threshold_pct) & (df['volume_spike_pct'] > 0)].copy()
+        print(f"📈 Found {len(df_spikes)} pairs with positive volume spikes >= {threshold_pct}%")
+        
+        # Filter by minimum average volume (liquidity filter)
+        min_avg_volume = 10000  # $10,000 minimum average volume
+        df_liquid = df_spikes[df_spikes['avg_prev_volume'] >= min_avg_volume].copy()
+        print(f"💧 Filtered to {len(df_liquid)} pairs with avg volume >= ${min_avg_volume:,.0f}")
+        
+        # Sort by spike percentage
+        df_sorted = df_liquid.sort_values('volume_spike_pct', ascending=False)
+        print("📊 Sorted by volume spike percentage (highest spikes first)")
         
         # Select top N
-        top_gainers = df_sorted.head(limit)
+        top_spikes = df_sorted.head(limit)
         
-        return top_gainers
+        return top_spikes
     
-    def get_top_volume_movers(self, limit: int = 20, min_volume_usdt: float = 100000, use_exchange_info: bool = True, rvol_days: int = 20) -> pd.DataFrame:
+    def get_volume_spikes_single_symbol(self, symbol: str, periods: int = 5, threshold_pct: float = 100.0) -> pd.DataFrame:
         """
-        Get the trading pairs with the highest relative volume (RVOL).
+        Get volume spike analysis for a single symbol.
         
         Args:
-            limit: Number of top volume movers to return
-            min_volume_usdt: Minimum 24h volume in USDT to filter by
-            use_exchange_info: Whether to use exchange info for better filtering
-            rvol_days: Number of days to use for RVOL calculation (default: 20)
+            symbol: The trading pair symbol to analyze
+            periods: Number of 15-minute periods to analyze (default: 5)
+            threshold_pct: Minimum spike percentage to include (default: 100%)
             
         Returns:
-            DataFrame sorted by RVOL (descending)
+            DataFrame with volume spike analysis for the single symbol
         """
-        print("📊 Fetching pairs with highest relative volume...")
+        print(f"🔍 Analyzing volume spikes for {symbol}...")
         
-        # Get all tickers
+        # Get ticker data for the specific symbol
         all_tickers = self.get_all_tickers()
         if not all_tickers:
             return pd.DataFrame()
         
-        # Get exchange info for better filtering
-        exchange_info = {}
-        if use_exchange_info:
-            exchange_info = self.get_exchange_info()
-        
-        # Filter to stablecoin/BNB pairs only
-        stablecoin_pairs = self.filter_stablecoin_pairs(all_tickers)
-        
-        # Filter to listed pairs if exchange info is available
-        if exchange_info:
-            listed_pairs = self.filter_listed_pairs(stablecoin_pairs, exchange_info)
-        else:
-            listed_pairs = self.filter_active_pairs(stablecoin_pairs)
-        
-        # Create DataFrame
-        df = self.create_dataframe(listed_pairs)
-        
-        # Filter by minimum volume
-        df = df[df['quote_volume'] >= min_volume_usdt]
-        print(f"📈 Filtered to {len(df)} pairs with volume >= ${min_volume_usdt:,.0f}")
-        
-        # Calculate RVOL
-        df = self.calculate_rvol(df, days=rvol_days)
-        
-        # Sort by RVOL (descending)
-        df_sorted = df.sort_values('rvol', ascending=False)
-        
-        # Select top N
-        top_volume_movers = df_sorted.head(limit)
-        
-        return top_volume_movers
-    
-    def get_top_losers(self, limit: int = 20, min_volume_usdt: float = 100000, use_exchange_info: bool = True, rvol_days: int = 20) -> pd.DataFrame:
-        """
-        Get the top losing trading pairs in the last 24 hours.
-        
-        Args:
-            limit: Number of top losers to return
-            min_volume_usdt: Minimum 24h volume in USDT to filter by
-            use_exchange_info: Whether to use exchange info for better filtering
-            rvol_days: Number of days to use for RVOL calculation (default: 20)
-            
-        Returns:
-            DataFrame sorted by price change percentage (ascending)
-        """
-        print("📉 Fetching all trading pairs from Binance...")
-        
-        # Get all tickers
-        all_tickers = self.get_all_tickers()
-        if not all_tickers:
+        ticker_data = next((t for t in all_tickers if t['symbol'] == symbol), None)
+        if not ticker_data:
+            print(f"❌ Symbol {symbol} not found in ticker data")
             return pd.DataFrame()
         
-        # Get exchange info for better filtering
-        exchange_info = {}
-        if use_exchange_info:
-            exchange_info = self.get_exchange_info()
+        # Get exchange info for trading venue
+        exchange_info = self.get_exchange_info()
         
-        # Filter to stablecoin/BNB pairs only
-        stablecoin_pairs = self.filter_stablecoin_pairs(all_tickers)
-        
-        # Filter to listed pairs if exchange info is available
+        # Create ticker with trading venue info
         if exchange_info:
-            listed_pairs = self.filter_listed_pairs(stablecoin_pairs, exchange_info)
+            symbol_info = next((s for s in exchange_info.get('symbols', []) if s['symbol'] == symbol), None)
+            if symbol_info:
+                is_spot = symbol_info.get('isSpotTradingAllowed', False)
+                is_futures = symbol_info.get('isFuturesTradingAllowed', False)
+                
+                if is_spot and is_futures:
+                    trading_venue = "Spot & Futures"
+                elif is_spot:
+                    trading_venue = "Spot Only"
+                elif is_futures:
+                    trading_venue = "Futures Only"
+                else:
+                    trading_venue = "Other"
+                
+                ticker_data['trading_venue'] = trading_venue
+            else:
+                ticker_data['trading_venue'] = "Unknown"
         else:
-            listed_pairs = self.filter_active_pairs(stablecoin_pairs)
+            ticker_data['trading_venue'] = "Active (Exchange Info Unavailable)"
         
         # Create DataFrame
-        df = self.create_dataframe(listed_pairs)
+        df = self.create_dataframe([ticker_data])
         
-        # Filter by minimum volume
-        df = df[df['quote_volume'] >= min_volume_usdt]
-        print(f"📈 Filtered to {len(df)} pairs with volume >= ${min_volume_usdt:,.0f}")
+        # Detect volume spikes
+        df = self.detect_volume_spikes(df, periods=periods, threshold_pct=threshold_pct)
         
-        # Calculate RVOL
-        df = self.calculate_rvol(df, days=rvol_days)
+        # Filter for spikes above threshold (if any)
+        if not df.empty and 'volume_spike_pct' in df.columns:
+            df_filtered = df[df['volume_spike_pct'] >= threshold_pct].copy()
+            if df_filtered.empty:
+                print(f"📉 No volume spikes >= {threshold_pct}% found for {symbol}")
+                # Return the original data even if no spike
+                return df
+            
+            # Filter by minimum average volume (liquidity filter)
+            min_avg_volume = 10000  # $10,000 minimum average volume
+            df_liquid = df_filtered[df_filtered['avg_prev_volume'] >= min_avg_volume].copy()
+            if df_liquid.empty:
+                print(f"⚠️  {symbol} has low average volume (${df_filtered['avg_prev_volume'].iloc[0]:,.0f}) - below ${min_avg_volume:,.0f} threshold")
+                return df_filtered  # Return unfiltered for single symbol analysis
+            
+            print(f"💧 {symbol} meets liquidity threshold (avg volume: ${df_liquid['avg_prev_volume'].iloc[0]:,.0f})")
+            return df_liquid
         
-        # Sort by price change percentage (ascending for losers)
-        df_sorted = df.sort_values('price_change_percent', ascending=True)
-        
-        # Select top N
-        top_losers = df_sorted.head(limit)
-        
-        return top_losers
+        return df
     
     def print_results(self, df: pd.DataFrame, title: str):
-        """
-        Print the results in a formatted table.
-        
-        Args:
-            df: DataFrame with results
-            title: Title for the output
-        """
+        """Print results in a formatted table."""
         if df.empty:
-            print(f"❌ No data found for {title}")
+            print(f"❌ No results found for {title}")
             return
         
-        print(f"\n{'='*80}")
-        print(f"📊 {title}")
-        print(f"{'='*80}")
-        print(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        print(f"{'='*80}")
+        print(f"\n{title}")
+        print("=" * 120)
         
         # Format the DataFrame for display
         display_df = df.copy()
-        display_df['price_change_percent'] = display_df['price_change_percent'].apply(lambda x: f"{x:+.2f}%")
-        display_df['last_price'] = display_df['last_price'].apply(lambda x: f"${x:.6f}")
-        display_df['quote_volume'] = display_df['quote_volume'].apply(lambda x: f"${x:,.0f}")
-        display_df['high_24h'] = display_df['high_24h'].apply(lambda x: f"${x:.6f}")
-        display_df['low_24h'] = display_df['low_24h'].apply(lambda x: f"${x:.6f}")
         
-        # Format RVOL with emphasis for high values
-        def format_rvol(x):
-            if x >= 5.0:
-                return f"🔥 {x:.1f}X"  # Very high volume
-            elif x >= 3.0:
-                return f"⚡ {x:.1f}X"  # High volume
-            elif x >= 2.0:
-                return f"📈 {x:.1f}X"  # Above average volume
-            elif x >= 1.5:
-                return f"📊 {x:.1f}X"  # Slightly above average
-            else:
-                return f"{x:.1f}X"     # Normal or below average
+        # Format percentage columns
+        display_df['price_change_percent'] = display_df['price_change_percent'].apply(
+            lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A"
+        )
+        display_df['volume_spike_pct'] = display_df['volume_spike_pct'].apply(
+            lambda x: f"🔥 +{x:.0f}%" if pd.notna(x) and x > 0 else f"📉 {x:.0f}%" if pd.notna(x) else "N/A"
+        )
         
-        display_df['rvol'] = display_df['rvol'].apply(format_rvol)
+        # Format price columns
+        display_df['last_price'] = display_df['last_price'].apply(
+            lambda x: f"${x:.6f}" if pd.notna(x) else "N/A"
+        )
+        display_df['high_24h'] = display_df['high_24h'].apply(
+            lambda x: f"${x:.6f}" if pd.notna(x) else "N/A"
+        )
+        display_df['low_24h'] = display_df['low_24h'].apply(
+            lambda x: f"${x:.6f}" if pd.notna(x) else "N/A"
+        )
         
-        # Select columns to display
-        columns_to_show = ['symbol', 'price_change_percent', 'last_price', 'quote_volume', 'rvol', 'trading_venue', 'high_24h', 'low_24h']
+        # Format volume columns
+        display_df['quote_volume'] = display_df['quote_volume'].apply(
+            lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
+        )
+        display_df['last_volume'] = display_df['last_volume'].apply(
+            lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
+        )
+        display_df['avg_prev_volume'] = display_df['avg_prev_volume'].apply(
+            lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
+        )
+        
+        # Select and order columns
+        columns_to_show = ['symbol', 'price_change_percent', 'last_price', 'quote_volume', 
+                          'volume_spike_pct', 'last_volume', 'avg_prev_volume', 'trading_venue', 
+                          'high_24h', 'low_24h']
         display_df = display_df[columns_to_show]
+        display_df.columns = ['Symbol', '24h Change %', 'Last Price', '24h Volume', 
+                             'Volume Spike %', 'Last 15m Vol', 'Avg Prev Vol', 'Trading Venue', 
+                             '24h High', '24h Low']
         
-        # Rename columns for better display
-        display_df.columns = ['Symbol', '24h Change %', 'Last Price', '24h Volume', 'RVOL (vs 20d avg)', 'Trading Venue', '24h High', '24h Low']
-        
+        # Print the table
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        pd.set_option('display.max_colwidth', 15)
         print(display_df.to_string(index=False))
-        print(f"{'='*80}")
         
-        # Add RVOL statistics summary
-        if 'rvol' in df.columns:
-            rvol_values = df['rvol'].dropna()
-            if len(rvol_values) > 0:
-                print(f"\n📊 RVOL Statistics:")
-                print(f"   Highest RVOL: {rvol_values.max():.1f}X")
-                print(f"   Average RVOL: {rvol_values.mean():.1f}X")
-                print(f"   Median RVOL: {rvol_values.median():.1f}X")
-                print(f"   Pairs with RVOL > 2X: {len(rvol_values[rvol_values > 2.0])}")
-                print(f"   Pairs with RVOL > 3X: {len(rvol_values[rvol_values > 3.0])}")
-                print(f"   Pairs with RVOL > 5X: {len(rvol_values[rvol_values > 5.0])}")
+        # Print summary statistics
+        print(f"\n📊 Summary:")
+        print(f"   Total pairs analyzed: {len(df)}")
+        print(f"   Pairs with spikes: {len(df[df['volume_spike_pct'] >= 0])}")
+        print(f"   Average spike: {df['volume_spike_pct'].mean():.1f}%")
+        print(f"   Max spike: {df['volume_spike_pct'].max():.1f}%")
     
-    def save_results(self, df: pd.DataFrame, filename: str):
-        """
-        Save results to a CSV file.
+    def debug_volume_data(self, symbol: str) -> Dict[str, Any]:
+        """Debug volume data for a specific symbol."""
+        print(f"🔍 Debugging volume data for {symbol}...")
         
-        Args:
-            df: DataFrame with results
-            filename: Name of the file to save
-        """
-        if df.empty:
-            print(f"❌ No data to save for {filename}")
-            return
+        # Get ticker data
+        all_tickers = self.get_all_tickers()
+        if not all_tickers:
+            return {'error': 'Could not fetch ticker data'}
         
-        try:
-            df.to_csv(filename, index=False)
-            print(f"💾 Results saved to {filename}")
-        except Exception as e:
-            print(f"❌ Error saving results: {e}")
+        ticker_data = next((t for t in all_tickers if t['symbol'] == symbol), None)
+        if not ticker_data:
+            return {'error': f'Symbol {symbol} not found in ticker data'}
+        
+        # Get historical volumes
+        volumes = self.get_historical_quote_volumes(symbol, periods=5)
+        if not volumes:
+            return {'error': f'Could not fetch historical data for {symbol}'}
+        
+        # Calculate spike
+        last_volume = volumes[-1]
+        prev_volumes = volumes[:-1]
+        avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else 0
+        spike_pct = ((last_volume - avg_prev_volume) / avg_prev_volume * 100) if avg_prev_volume > 0 else 0
+        
+        return {
+            'symbol': symbol,
+            'ticker_24h_volume': float(ticker_data['quoteVolume']),
+            'last_15m_volume': last_volume,
+            'avg_prev_4_volumes': avg_prev_volume,
+            'volume_spike_pct': round(spike_pct, 1),
+            'volumes': volumes
+        }
     
     def check_symbol_status(self, symbol: str) -> Dict[str, Any]:
-        """
-        Check the detailed status of a specific symbol.
-        
-        Args:
-            symbol: Symbol to check (e.g., 'TKOUSDT')
-            
-        Returns:
-            Dictionary with symbol status information
-        """
+        """Check the status of a specific symbol."""
         print(f"🔍 Checking status for {symbol}...")
         
         # Get exchange info
         exchange_info = self.get_exchange_info()
+        if not exchange_info:
+            return {'error': 'Could not fetch exchange info'}
         
-        if not exchange_info or 'symbols' not in exchange_info:
-            return {"error": "Could not fetch exchange info"}
+        # Find symbol info
+        symbol_info = next((s for s in exchange_info.get('symbols', []) if s['symbol'] == symbol), None)
+        if not symbol_info:
+            return {'error': f'Symbol {symbol} not found in exchange info'}
         
-        # Find the symbol in exchange info
-        for symbol_info in exchange_info['symbols']:
-            if symbol_info['symbol'] == symbol.upper():
-                # Determine trading venue
-                is_spot_allowed = symbol_info.get('isSpotTradingAllowed', False)
-                is_futures_allowed = symbol_info.get('isFuturesTradingAllowed', False)
-                
-                if is_spot_allowed and is_futures_allowed:
-                    trading_venue = "Spot & Futures"
-                elif is_spot_allowed:
-                    trading_venue = "Spot Only"
-                elif is_futures_allowed:
-                    trading_venue = "Futures Only"
-                else:
-                    trading_venue = "Not Tradeable"
-                
-                return {
-                    "symbol": symbol_info['symbol'],
-                    "status": symbol_info['status'],
-                    "trading_venue": trading_venue,
-                    "isSpotTradingAllowed": symbol_info.get('isSpotTradingAllowed', False),
-                    "isSuspended": symbol_info.get('isSuspended', False),
-                    "isMarginTradingAllowed": symbol_info.get('isMarginTradingAllowed', False),
-                    "isFuturesTradingAllowed": symbol_info.get('isFuturesTradingAllowed', False),
-                    "permissions": symbol_info.get('permissions', [])
-                }
-        
-        return {"error": f"Symbol {symbol} not found in exchange info"}
-    
-    def search_symbol(self, symbol: str, use_exchange_info: bool = True) -> pd.DataFrame:
-        """
-        Search for a specific symbol and show its 24h performance.
-        
-        Args:
-            symbol: Symbol to search for (e.g., 'CREAMUSDT')
-            use_exchange_info: Whether to use exchange info for better filtering
-            
-        Returns:
-            DataFrame with the symbol's data if found
-        """
-        print(f"🔍 Searching for {symbol}...")
-        
-        # Get all tickers
-        all_tickers = self.get_all_tickers()
-        if not all_tickers:
-            return pd.DataFrame()
-        
-        # Get exchange info for better filtering
-        exchange_info = {}
-        if use_exchange_info:
-            exchange_info = self.get_exchange_info()
-        
-        # Filter to stablecoin/BNB pairs only
-        stablecoin_pairs = self.filter_stablecoin_pairs(all_tickers)
-        
-        # Filter to listed pairs if exchange info is available
-        if exchange_info:
-            listed_pairs = self.filter_listed_pairs(stablecoin_pairs, exchange_info)
-        else:
-            listed_pairs = self.filter_active_pairs(stablecoin_pairs)
-        
-        # Search for the specific symbol
-        symbol_data = None
-        for ticker in listed_pairs:
-            if ticker['symbol'] == symbol.upper():
-                symbol_data = ticker
-                break
-        
-        if symbol_data:
-            print(f"✅ Found {symbol.upper()} in listed pairs")
-            df = self.create_dataframe([symbol_data])
-            return df
-        else:
-            print(f"❌ {symbol.upper()} not found in listed pairs")
-            
-            # Check if it exists in all tickers but not in listed pairs
-            for ticker in all_tickers:
-                if ticker['symbol'] == symbol.upper():
-                    print(f"⚠️ {symbol.upper()} exists but is not currently listed/trading")
-                    print(f"   Status: {ticker.get('status', 'Unknown')}")
-                    break
-            else:
-                print(f"❌ {symbol.upper()} not found in any Binance pairs")
-            
-            return pd.DataFrame()
+        return {
+            'symbol': symbol,
+            'status': symbol_info.get('status'),
+            'trading_venue': 'Spot & Futures' if symbol_info.get('isSpotTradingAllowed') and symbol_info.get('isFuturesTradingAllowed') else
+                           'Spot Only' if symbol_info.get('isSpotTradingAllowed') else
+                           'Futures Only' if symbol_info.get('isFuturesTradingAllowed') else 'Other',
+            'isSpotTradingAllowed': symbol_info.get('isSpotTradingAllowed'),
+            'isSuspended': symbol_info.get('isSuspended'),
+            'isMarginTradingAllowed': symbol_info.get('isMarginTradingAllowed'),
+            'isFuturesTradingAllowed': symbol_info.get('isFuturesTradingAllowed'),
+            'permissions': symbol_info.get('permissions', [])
+        }
+
 
 def main():
-    """Main function to run the top gainers analysis."""
-    import sys
-    
-    print("🚀 Binance Top Gainers Analysis")
+    """Main function with command line argument parsing."""
+    print("🚀 Binance Volume Spike Detector")
     print("=" * 50)
     
-    # Configuration
-    RVOL_DAYS = 15  # Number of days for RVOL calculation
-    LIMIT = 15      # Number of results to show
-    MIN_VOLUME = 100000  # Minimum volume filter
-    MAX_WORKERS = 10  # Number of parallel workers for RVOL calculation
+    # Parse command line arguments
+    args = sys.argv[1:]
     
-    # Parse command line arguments for workers
-    if len(sys.argv) > 1 and sys.argv[1].startswith("workers:"):
-        try:
-            MAX_WORKERS = int(sys.argv[1].split(":")[1])
-            print(f"🔧 Using {MAX_WORKERS} parallel workers")
-            # Remove the workers argument from sys.argv
-            sys.argv.pop(1)
-        except (ValueError, IndexError):
-            print("⚠️ Invalid workers format. Using default: 10")
+    # Default parameters
+    periods = 12
+    threshold_pct = 100.0
+    max_workers = 10
     
-    # Initialize the analyzer with parallel processing
-    analyzer = BinanceTopGainers(max_workers=MAX_WORKERS)
+    # Parse arguments
+    single_symbol = None
+    numeric_args = []
     
-    # Check if a symbol was provided as command line argument
-    if len(sys.argv) > 1:
-        symbol = sys.argv[1]
-        
-        # Check if it's a status check (symbol starts with "status:")
-        if symbol.startswith("status:"):
-            symbol_to_check = symbol[7:]  # Remove "status:" prefix
-            print(f"🔍 Checking status for: {symbol_to_check}")
-            status_info = analyzer.check_symbol_status(symbol_to_check)
+    for arg in args:
+        if arg.startswith('workers:'):
+            try:
+                max_workers = int(arg.split(':')[1])
+            except (ValueError, IndexError):
+                pass
+        elif arg.startswith('debug:'):
+            symbol = arg.split(':')[1]
+            detector = BinanceVolumeSpikeDetector(max_workers=max_workers)
+            debug_info = detector.debug_volume_data(symbol)
+            print(f"Debug info: {debug_info}")
+            return
+        elif arg.startswith('status:'):
+            symbol = arg.split(':')[1]
+            detector = BinanceVolumeSpikeDetector(max_workers=max_workers)
+            status_info = detector.check_symbol_status(symbol)
             print(f"Status info: {status_info}")
             return
-        
-        print(f"🔍 Searching for specific symbol: {symbol}")
-        
-        # Search for the specific symbol
-        symbol_data = analyzer.search_symbol(symbol)
-        if not symbol_data.empty:
-            analyzer.print_results(symbol_data, f"{symbol.upper()} PERFORMANCE (24h)")
-        return
+        elif arg.startswith('symbol:'):
+            single_symbol = arg.split(':')[1]
+        else:
+            try:
+                # Try to parse as number
+                numeric_args.append(float(arg))
+            except ValueError:
+                # If it's not a number, it might be a symbol without the symbol: prefix
+                if not arg.startswith('symbol:') and not arg.startswith('debug:') and not arg.startswith('status:') and not arg.startswith('workers:'):
+                    single_symbol = arg
     
-    # Get top gainers (only listed pairs)
-    print("📈 Getting top gainers (listed pairs only)...")
-    top_gainers = analyzer.get_top_gainers(
-        limit=LIMIT, 
-        min_volume_usdt=MIN_VOLUME, 
-        use_exchange_info=True, 
-        sort_by_rvol=True,
-        rvol_days=RVOL_DAYS
-    )
-    analyzer.print_results(top_gainers, f"TOP {LIMIT} GAINERS (24h) - LISTED PAIRS ONLY")
+    # Apply numeric arguments
+    if len(numeric_args) >= 1:
+        periods = int(numeric_args[0])
+    if len(numeric_args) >= 2:
+        threshold_pct = numeric_args[1]
     
-    # Save results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    analyzer.save_results(top_gainers, f"top_gainers_listed_{timestamp}.csv")
+    print(f"📊 Parameters: {periods} periods, {threshold_pct}% threshold, {max_workers} workers")
     
-    # Get top volume movers (highest RVOL)
-    print("\n" + "="*50)
-    print("📊 Getting top volume movers (highest RVOL)...")
-    top_volume_movers = analyzer.get_top_volume_movers(
-        limit=LIMIT, 
-        min_volume_usdt=MIN_VOLUME, 
-        use_exchange_info=True,
-        rvol_days=RVOL_DAYS
-    )
-    analyzer.print_results(top_volume_movers, f"TOP {LIMIT} VOLUME MOVERS (HIGHEST RVOL) - LISTED PAIRS ONLY")
+    # Create detector and get results
+    detector = BinanceVolumeSpikeDetector(max_workers=max_workers)
     
-    # Save results
-    analyzer.save_results(top_volume_movers, f"top_volume_movers_{timestamp}.csv")
+    if single_symbol:
+        print(f"🔍 Analyzing single symbol: {single_symbol}")
+        results = detector.get_volume_spikes_single_symbol(
+            symbol=single_symbol,
+            periods=periods,
+            threshold_pct=threshold_pct
+        )
+        title = f"🔥 Volume Spike Analysis for {single_symbol} (Last {periods} periods, >= {threshold_pct}% threshold)"
+    else:
+        results = detector.get_volume_spikes(
+            periods=periods,
+            threshold_pct=threshold_pct,
+            min_volume_usdt=100000,
+            limit=50
+        )
+        title = f"🔥 Top Volume Spikes (Last {periods} periods, >= {threshold_pct}% threshold)"
     
-    # Get top losers (only listed pairs)
-    print("\n" + "="*50)
-    print("📉 Getting top losers (listed pairs only)...")
-    top_losers = analyzer.get_top_losers(
-        limit=LIMIT, 
-        min_volume_usdt=MIN_VOLUME, 
-        use_exchange_info=True,
-        rvol_days=RVOL_DAYS
-    )
-    analyzer.print_results(top_losers, f"TOP {LIMIT} LOSERS (24h) - LISTED PAIRS ONLY")
+    # Print results
+    detector.print_results(results, title)
     
-    # Save results
-    analyzer.save_results(top_losers, f"top_losers_listed_{timestamp}.csv")
-    
-    print(f"\n✅ Analysis completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    print(f"\n📊 Analysis Configuration:")
-    print(f"   - RVOL Period: {RVOL_DAYS} days")
-    print(f"   - Results Limit: {LIMIT} pairs")
-    print(f"   - Min Volume: ${MIN_VOLUME:,.0f}")
-    print(f"\n💡 To search for a specific symbol, run:")
-    print(f"   python {sys.argv[0]} CREAMUSDT")
-    print(f"\n💡 To check symbol status, run:")
-    print(f"   python {sys.argv[0]} status:CREAMUSDT")
+    # Save to CSV
+    if not results.empty:
+        if single_symbol:
+            filename = f"volume_spikes_{single_symbol}_{periods}periods_{threshold_pct}pct.csv"
+        else:
+            filename = f"volume_spikes_{periods}periods_{threshold_pct}pct.csv"
+        results.to_csv(filename, index=False)
+        print(f"\n💾 Results saved to {filename}")
+
 
 if __name__ == "__main__":
-    main() 
+    main()

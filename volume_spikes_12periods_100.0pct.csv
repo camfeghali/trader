@@ -1,0 +1,2 @@
+symbol,price_change_percent,last_price,quote_volume,count,trading_venue,high_24h,low_24h,volume_spike_pct,last_volume,avg_prev_volume,periods_used,is_bullish
+RAYUSDC,12.237,3.577,10194142.5084,43584,Spot Only,3.714,3.102,106.2,78049.2033,37850.98097272727,11,False
